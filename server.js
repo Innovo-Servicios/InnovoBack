@@ -22,6 +22,7 @@ const path = require('path');
 const axios = require('axios');
 const {pushNotification,crearNotificacion} = require('./app/Controller/notificaciones.Controller.js');
 const moment = require('moment-timezone');
+const mongoSanitize = require('express-mongo-sanitize');
 const key = process.env.JWT_SECRET;
 
 
@@ -87,6 +88,7 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(mongoSanitize());
 
 // Conexión a MongoDB
 const uri = `mongodb://${process.env.MONGO_USER}:${encodeURIComponent(process.env.MONGO_PASSWORD)}@${process.env.MONGO_HOST}/${process.env.MONGO_DATABASE}`;
@@ -157,7 +159,7 @@ io.on('connection', (socket) => {
         return;
       }
       // Buscar el nombre del trabajador en MongoDB
-      const trabajador = await trabajador_MongooseModel.findOne({ Rut: rut }).select('Nombre');
+      const trabajador = await trabajador_MongooseModel.findOne({ Rut: String(rut) }).select('Nombre');
 
       if (!trabajador) {
         console.error(`❌ No se encontró el trabajador con RUT: ${rut}`);
@@ -282,7 +284,7 @@ io.on('connection', (socket) => {
       console.log(`🚪 Trabajador desconectado: ${usuario.nombre} (${usuario.id_trabajador})`);
       try {
         await trabajador_MongooseModel.findOneAndUpdate(
-          { Rut: usuario.id_trabajador },
+          { Rut: String(usuario.id_trabajador) },
           {
             lastUbication: {
               ...usuario.ubicacion,
