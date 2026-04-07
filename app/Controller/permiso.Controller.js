@@ -40,7 +40,7 @@ const eliminarPermiso = async (req, res) => {
         const {id} = req.body;
         try{
             await
-            Permiso.findByIdAndDelete(id);
+            Permiso.findByIdAndDelete(String(id));
             res.send('Permiso eliminado con éxito');
         }
         catch (error) {

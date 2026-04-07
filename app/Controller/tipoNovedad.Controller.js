@@ -47,7 +47,7 @@ const eliminarTipoNovedad = async (req, res) => {
     if (tokenValido.valid) {
         const { id } = req.body;
         try {
-            await TipoNovedad.findByIdAndDelete(id);
+            await TipoNovedad.findByIdAndDelete(String(id));
             res.status(200).send('Tipo de novedad eliminado');
         } catch (error) {
             // console.error('Error al eliminar tipo de novedad:', error);

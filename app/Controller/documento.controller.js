@@ -55,7 +55,9 @@ const resolveSafeWorkerPath = (workerId) => {
         return null;
     }
 
-    const resolvedPath = path.resolve(trabajadoresBasePath, normalizedWorkerId);
+    // Use path.basename to strip any directory traversal from the input
+    const safeComponent = path.basename(String(normalizedWorkerId));
+    const resolvedPath = path.join(trabajadoresBasePath, safeComponent);
     if (!resolvedPath.startsWith(`${trabajadoresBasePath}${path.sep}`)) {
         return null;
     }
@@ -69,7 +71,9 @@ const resolveSafeDocumentPath = (documentPath) => {
         return null;
     }
 
-    const resolvedPath = path.resolve(normalizedPath);
+    // Extract only the filename to prevent directory traversal
+    const safeFileName = path.basename(String(normalizedPath));
+    const resolvedPath = path.join(trabajadoresBasePath, safeFileName);
     if (!resolvedPath.startsWith(`${trabajadoresBasePath}${path.sep}`)) {
         return null;
     }
@@ -96,9 +100,9 @@ const crearDocumento = async (req, res) => {
             return res.status(400).send('Datos de documento inválidos');
         }
 
-        const resTipo = await tipoDocumento_MongooseModel.findOne(
-            mongoose.sanitizeFilter({ _id: new mongoose.Types.ObjectId(tipoId) })
-        );
+        const resTipo = await tipoDocumento_MongooseModel.findOne({
+            _id: { $eq: new mongoose.Types.ObjectId(tipoId) }
+        });
         if (!resTipo) {
             return res.status(400).send('Tipo de documento no encontrado');
         }
@@ -115,9 +119,9 @@ const crearDocumento = async (req, res) => {
             return res.status(400).send('Formato de archivo no permitido: ' + archivo.mimetype);
         }
 
-        const trabajador = await trabajador_MongooseModel.findOne(
-            mongoose.sanitizeFilter({ Rut: objetivoRut })
-        );
+        const trabajador = await trabajador_MongooseModel.findOne({
+            Rut: { $eq: String(objetivoRut) }
+        });
         if (!trabajador) {
             return res.status(404).send('Trabajador no encontrado');
         }
@@ -132,18 +136,18 @@ const crearDocumento = async (req, res) => {
         }
 
         let finalPath;
-        const fileName = `file-${Date.now()}-${archivo.originalname}`;
+        const safeFileName = path.basename(`file-${Date.now()}-${archivo.originalname}`);
 
         if (archivo.mimetype === 'image/jpeg' || archivo.mimetype === 'image/png') {
             // Procesar imágenes en memoria con sharp
-            finalPath = path.join(uploadPath, fileName.replace(/\.[^/.]+$/, '.jpeg')); // Renombrar extensión a .jpeg
+            finalPath = path.join(uploadPath, safeFileName.replace(/\.[^/.]+$/, '.jpeg')); // Renombrar extensión a .jpeg
             await sharp(archivo.buffer)
                 .resize(1024, 1024, { fit: 'inside' }) // Redimensiona manteniendo proporción
                 .toFormat('jpeg', { quality: 80 }) // Convierte a JPEG con calidad 80%
                 .toFile(finalPath);
         } else {
             // Guardar otros tipos de archivos directamente desde el buffer
-            finalPath = path.join(uploadPath, fileName);
+            finalPath = path.join(uploadPath, safeFileName);
             fs.writeFileSync(finalPath, archivo.buffer);
         }
 
@@ -185,9 +189,9 @@ const obtenerDocumentos = async (req, res) => {
             return res.status(400).send('Datos de búsqueda inválidos');
         }
 
-        const trabajador = await trabajador_MongooseModel.findOne(
-            mongoose.sanitizeFilter({ Rut: rutTrabajador })
-        );
+        const trabajador = await trabajador_MongooseModel.findOne({
+            Rut: { $eq: String(rutTrabajador) }
+        });
         if (!trabajador) {
             return res.status(404).send('Trabajador no encontrado');
         }
@@ -225,9 +229,9 @@ const eliminarDocumentos = async (req, res) => {
             return res.status(404).send('Documento no encontrado');
         }
 
-        const trabajador = await trabajador_MongooseModel.findOne(
-            mongoose.sanitizeFilter({ Rut: rutTrabajador })
-        );
+        const trabajador = await trabajador_MongooseModel.findOne({
+            Rut: { $eq: String(rutTrabajador) }
+        });
         if (!trabajador) {
             return res.status(404).send('Trabajador no encontrado');
         }
@@ -272,9 +276,9 @@ const listarDocumentos = async (req, res) => {
             return res.status(404).send('Trabajador no encontrado');
         }
 
-        const documentos = await trabajador_MongooseModel.findOne(
-            mongoose.sanitizeFilter({ Rut: rutTrabajador })
-        ).select('documentos');
+        const documentos = await trabajador_MongooseModel.findOne({
+            Rut: { $eq: String(rutTrabajador) }
+        }).select('documentos');
         if (!documentos) {
             return res.status(404).send('Trabajador no encontrado');
         }
@@ -327,9 +331,9 @@ const deleteDocumento= async(req,res)=>{
 
         // Eliminar documento de la base de datos y del trabajador
         await documento.deleteOne();
-        const trabajador= await trabajador_MongooseModel.findOne(
-            mongoose.sanitizeFilter({ Rut: rutTrabajador })
-        );
+        const trabajador= await trabajador_MongooseModel.findOne({
+            Rut: { $eq: String(rutTrabajador) }
+        });
         if (!trabajador) {
             return res.status(404).send('Trabajador no encontrado');
         }

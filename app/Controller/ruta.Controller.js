@@ -11,7 +11,7 @@ const crearrutas = async (req, res) => {
     if (tokenValido.valid){   
         const { NumeroRuta } = req.body;  
         try {
-            const rutaExistente = await ruta_MongooseModel.findOne({ NumeroRuta });
+            const rutaExistente = await ruta_MongooseModel.findOne({ NumeroRuta: { $eq: Number(NumeroRuta) } });
             if (rutaExistente) {
                 return res.status(400).send('La ruta ya existe');
             }
@@ -37,7 +37,7 @@ const calcularPerimetral = async (req, res) => {
 
     try {
         const { NumeroRuta } = req.body;
-        const ruta = await ruta_MongooseModel.findOne({ NumeroRuta });
+        const ruta = await ruta_MongooseModel.findOne({ NumeroRuta: { $eq: Number(NumeroRuta) } });
         if (!ruta) {
             return res.status(404).send('Ruta no encontrada');
         }

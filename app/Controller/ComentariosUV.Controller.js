@@ -52,9 +52,9 @@ const crearComentarioUV = async (req, res) => {
                 return res.status(400).send('Comentario inválido');
             }
 
-            const comentarioExistente = await ComentariosUVModel.findOne(
-                mongoose.sanitizeFilter({ value: comentarioNormalizado })
-            );
+            const comentarioExistente = await ComentariosUVModel.findOne({
+                value: { $eq: comentarioNormalizado }
+            });
             if (comentarioExistente) {
                 return res.status(400).send('El comentario ya existe');
             }
@@ -82,9 +82,9 @@ const eliminarComentarioUV = async (req, res) => {
                 return res.status(404).send('Comentario no encontrado');
             }
 
-            const comentario = await ComentariosUVModel.findOneAndDelete(
-                mongoose.sanitizeFilter({ _id: new mongoose.Types.ObjectId(comentarioId) })
-            );
+            const comentario = await ComentariosUVModel.findOneAndDelete({
+                _id: { $eq: new mongoose.Types.ObjectId(comentarioId) }
+            });
             if (comentario) {
                 return res.status(200).send('Comentario eliminado correctamente');
             } else {

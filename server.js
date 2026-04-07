@@ -14,12 +14,13 @@ const { Region } = require('./app/Model/region_Mongoose.js');
 const { notificacion_MongooseModel } = require('./app/Model/notificacion_Mongoose.js');
 // Crear servidor HTTP
 const server = http.createServer(app);
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const { time } = require('console');
 const _ = require('lodash');
 const jwt = require("jsonwebtoken");
 const path = require('path');
 const axios = require('axios');
+const helmet = require('helmet');
 const {pushNotification,crearNotificacion} = require('./app/Controller/notificaciones.Controller.js');
 const moment = require('moment-timezone');
 const mongoSanitize = require('express-mongo-sanitize');
@@ -85,6 +86,7 @@ const io = new Server(server, {
     methods: ["GET", "POST"],
   },
 });
+app.use(helmet());
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -124,7 +126,7 @@ app.use('/TRABAJADORES', express.static(path.join(__dirname, '../TRABAJADORES'))
 require('./app/Router/main.router')(app);
 
 const obtenerEstadoBot = (callback) => {
-  exec("python3 ../Asistente/checker.py --status", (error, stdout, stderr) => {
+  execFile('python3', ['../Asistente/checker.py', '--status'], (error, stdout, stderr) => {
     if (error) {
       console.error(`Error al ejecutar el script: ${error.message}`);
       callback(false); // Asume estado falso en caso de error
@@ -173,7 +175,7 @@ io.on('connection', (socket) => {
       };
 
       // actualizarUV();
-      socket.join(rut);
+      socket.join(String(rut));
       console.log(`✅ Trabajador registrado: ${trabajador.Nombre} (${rut})`);
 
       // Emitir la actualización a todos los clientes conectados
@@ -217,7 +219,7 @@ io.on('connection', (socket) => {
   });
   socket.on('actualizarEstadoBot', (estado) => {
     if (estado) {
-      exec("python3 ../Asistente/checker.py --start", (error, stdout, stderr) => {
+      execFile('python3', ['../Asistente/checker.py', '--start'], (error, stdout, stderr) => {
         if (error) {
           console.error(`Error al ejecutar el script: ${error.message}`);
           return;
@@ -229,7 +231,7 @@ io.on('connection', (socket) => {
       }, 500);
     }
     else {
-      exec("python3 ../Asistente/checker.py --stop", (error, stdout, stderr) => {
+      execFile('python3', ['../Asistente/checker.py', '--stop'], (error, stdout, stderr) => {
         if (error) {
           console.error(`Error al ejecutar el script: ${error.message}`);
           return;

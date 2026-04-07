@@ -137,15 +137,15 @@ const agregardireccion = async (req, res) => {
                 return res.status(400).send('Datos de dirección inválidos');
             }
 
-            const sectorExistente = await sector.findOne(
-                mongoose.sanitizeFilter({ NumeroSector: numeroSector })
-            );
-            const medidorExistente = await medidor.findOne(
-                mongoose.sanitizeFilter({ NumeroMedidor: numeroMedidor })
-            );
-            const direccionExistente = await direccion.findOne(
-                mongoose.sanitizeFilter({ calle: calleNormalizada, numero: numeroDireccion })
-            );
+            const sectorExistente = await sector.findOne({
+                NumeroSector: { $eq: Number(numeroSector) }
+            });
+            const medidorExistente = await medidor.findOne({
+                NumeroMedidor: { $eq: Number(numeroMedidor) }
+            });
+            const direccionExistente = await direccion.findOne({
+                calle: { $eq: String(calleNormalizada) }, numero: { $eq: Number(numeroDireccion) }
+            });
             if (!sectorExistente){
                 return res.status(400).send('Sector no existente');
             }
@@ -222,9 +222,9 @@ const modificardireccion = async (req, res) => {
                 return res.status(400).send('Datos de dirección inválidos');
             }
 
-            const direccionmedidor = await medidor.findOne(
-                mongoose.sanitizeFilter({ NumeroMedidor: numeroMedidor })
-            );
+            const direccionmedidor = await medidor.findOne({
+                NumeroMedidor: { $eq: Number(numeroMedidor) }
+            });
             if (!direccionmedidor) {
                 return res.status(404).send('Medidor no encontrado.');
             }
@@ -277,12 +277,12 @@ const obtenerdireccion = async (req, res) => {
                 return res.status(404).send('Trabajador no encontrado');
             }
 
-            const medidorDoc = await medidor_MongooseModel.findOne(
-                mongoose.sanitizeFilter({ NumeroMedidor: numeroMedidor })
-            );
-            const trabajador = await trabajador_MongooseModel.findOne(
-                mongoose.sanitizeFilter({ Rut: rutTrabajador })
-            );
+            const medidorDoc = await medidor_MongooseModel.findOne({
+                NumeroMedidor: { $eq: Number(numeroMedidor) }
+            });
+            const trabajador = await trabajador_MongooseModel.findOne({
+                Rut: { $eq: String(rutTrabajador) }
+            });
             if (!trabajador) {
                 return res.status(404).send('Trabajador no encontrado');
             }
@@ -372,9 +372,9 @@ const obtenerDireccionesSector = async(req, res) => {
                 return res.status(404).send('Sector no encontrado');
             }
 
-            const sectorExistente = await sector.findOne(
-                mongoose.sanitizeFilter({ NumeroSector: numeroSector })
-            );
+            const sectorExistente = await sector.findOne({
+                NumeroSector: { $eq: Number(numeroSector) }
+            });
             if (!sectorExistente){
                 return res.status(404).send('Sector no encontrado');
             }
@@ -413,9 +413,9 @@ const modificarCoord= async(req,res) => {
                 return res.status(400).send('Coordenadas inválidas');
             }
 
-            const medidorDoc = await medidor_MongooseModel.findOne(
-                mongoose.sanitizeFilter({ NumeroMedidor: numeroMedidor })
-            );
+            const medidorDoc = await medidor_MongooseModel.findOne({
+                NumeroMedidor: { $eq: Number(numeroMedidor) }
+            });
             if (!medidorDoc){
                 return res.status(404).send('Medidor no encontrado.');
             }
@@ -460,9 +460,9 @@ const comentarDireccion = async (req, res) => {
                 return res.status(400).send('Comentario inválido');
             }
 
-            const medidorDoc = await medidor_MongooseModel.findOne(
-                mongoose.sanitizeFilter({ NumeroMedidor: numeroMedidor })
-            );
+            const medidorDoc = await medidor_MongooseModel.findOne({
+                NumeroMedidor: { $eq: Number(numeroMedidor) }
+            });
             if (!medidorDoc){
                 return res.status(404).send('Medidor no encontrado.');
             }
@@ -501,9 +501,9 @@ const listadirecciones=async(req,res)=>{
                 return res.status(404).send('Trabajador no encontrado');
             }
 
-            const trabajador = await trabajador_MongooseModel.findOne(
-                mongoose.sanitizeFilter({ Rut: rutTrabajador })
-            );
+            const trabajador = await trabajador_MongooseModel.findOne({
+                Rut: { $eq: String(rutTrabajador) }
+            });
             if (!trabajador) {
                 return res.status(404).send('Trabajador no encontrado');
             }

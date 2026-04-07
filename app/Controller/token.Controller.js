@@ -6,7 +6,7 @@ async function crearToken(datosTrabajador) {
     const { rut,ID} = datosTrabajador; // Usar destructuración para evitar confusión con el nombre del modelo
     try {
         // Usar el modelo importado correctamente para llamar a findOne
-        const usuarioExistente = await trabajador_MongooseModel.findOne({ Rut: rut });
+        const usuarioExistente = await trabajador_MongooseModel.findOne({ Rut: { $eq: String(rut) } });
         if (!usuarioExistente) {
             res.status(404).send('Trabajador no encontrado');
         }
@@ -22,7 +22,7 @@ async function crearToken(datosTrabajador) {
 async function validartoken(token) {
     try {
         const tokenValido = jwt.verify(token, key);
-        const rut = await trabajador_MongooseModel.findOne({ Rut: tokenValido.rut });
+        const rut = await trabajador_MongooseModel.findOne({ Rut: { $eq: String(tokenValido.rut) } });
         if (tokenValido.rut == rut.Rut && tokenValido.ID == rut.ID && rut.rolTemporal!=null) {
             return { valid: true, token: tokenValido };  // Devuelve un objeto indicando que el token es válido
         } else {

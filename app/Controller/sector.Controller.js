@@ -14,8 +14,8 @@ const crearsectores = async (req, res) => {
     if (tokenValido.valid){   
         const { NumeroRuta, NumeroSector, sector } = req.body;
         try {
-            const sectorExistente = await Sector.findOne({ NumeroSector });
-            const rutaExistente = await Ruta.findOne({ NumeroRuta: NumeroRuta });
+            const sectorExistente = await Sector.findOne({ NumeroSector: { $eq: Number(NumeroSector) } });
+            const rutaExistente = await Ruta.findOne({ NumeroRuta: { $eq: Number(NumeroRuta) } });
             if (!rutaExistente) {
                 return res.status(400).send('Ruta no existente');
             }
@@ -45,7 +45,7 @@ const obtenerDatosSectores = async (req, res) => {
     if (tokenValido.valid) {
         const { NumeroSector } = req.body;
         try {
-            const sector = await Sector.findOne({ NumeroSector });
+            const sector = await Sector.findOne({ NumeroSector: { $eq: Number(NumeroSector) } });
             if (!sector) {
                 return res.status(404).send('Sector no encontrado');
             }
@@ -102,7 +102,7 @@ const obtenerSectoresRuta = async (req, res) => {
     if (tokenValido.valid) {
         const { NumeroRuta } = req.body;
         try {
-            const ruta = await Ruta.findOne({ NumeroRuta });
+            const ruta = await Ruta.findOne({ NumeroRuta: { $eq: Number(NumeroRuta) } });
             if (!ruta) {
                 return res.status(404).send('Ruta no encontrada');
             }
@@ -119,7 +119,7 @@ const obtenerSectoresRuta = async (req, res) => {
 
 const calcularPerimetro = async (NumeroSector) => {
     try {
-        const sector = await Sector.findOne({ NumeroSector: NumeroSector });
+        const sector = await Sector.findOne({ NumeroSector: { $eq: String(NumeroSector) } });
         if (!sector) {
             throw new Error('Sector no encontrado');
         }

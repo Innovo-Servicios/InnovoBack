@@ -10,8 +10,8 @@ const agregarmedidor= async (req, res) => {
     if (tokenValido){   
         const {NumeroCliente, NumeroMedidor} = req.body;
         try{
-            const usuarioExistente = await cliente.cliente_MongooseModel.findOne({NumeroCliente});
-            const medidorExistente = await medidor.medidor_MongooseModel.findOne({NumeroMedidor});
+            const usuarioExistente = await cliente.cliente_MongooseModel.findOne({ NumeroCliente: { $eq: Number(NumeroCliente) } });
+            const medidorExistente = await medidor.medidor_MongooseModel.findOne({ NumeroMedidor: { $eq: Number(NumeroMedidor) } });
             if (!usuarioExistente) {
                 return res.status(400).send('El usuario no existe');
             }

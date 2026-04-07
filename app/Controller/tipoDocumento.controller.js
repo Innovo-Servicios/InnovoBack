@@ -42,7 +42,7 @@ const eliminarTipo = async (req, res) => {
     const tokenValido = await Token.validartoken(token);
     if (tokenValido.valid){
         try{
-            await tipoDocumento_MongooseModel.deleteOne({_id: id});
+            await tipoDocumento_MongooseModel.deleteOne({ _id: { $eq: String(id) } });
             res.status(200).send('Tipo de documento eliminado correctamente');
         }catch (error) {
             res.status(500).send('Error interno del servidor: '+ error.message);

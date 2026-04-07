@@ -24,14 +24,14 @@ const asignacionATE = async (req, res) => {
             const fechaconsulta = dayjs(fecha).utc(); // No aplicar .format aquí
             const fechaConsultaConHoraCero = fechaconsulta.startOf('day');
             const fechaFin = dayjs(fecha).endOf('day').toDate();
-            const Tnovedad = await TipoNovedad.findOne({ value: tipo });
-            const direccionexistente = await DIRECCION.findOne({ "_id": Direccion }).lean();
+            const Tnovedad = await TipoNovedad.findOne({ value: { $eq: String(tipo) } });
+            const direccionexistente = await DIRECCION.findOne({ _id: { $eq: String(Direccion) } }).lean();
             if (!direccionexistente) {
                 return res.status(404).send('Dirección no encontrada.');
             }
 
             const asignaciones = await Asignacion.findOne({
-                NumeroSector: direccionexistente.NumeroSector,
+                NumeroSector: { $eq: direccionexistente.NumeroSector },
                 fecha_asignacion: {
                     $gte: fechaConsultaConHoraCero,
                     $lt: fechaFin
@@ -43,7 +43,7 @@ const asignacionATE = async (req, res) => {
                 return res.status(404).send('No se encontraron asignaciones para el sector y fecha especificados.');
             }
 
-            const trabajador = await trabajador_MongooseModel.findOne({ _id: asignaciones.Trabajador }).lean();
+            const trabajador = await trabajador_MongooseModel.findOne({ _id: { $eq: asignaciones.Trabajador } }).lean();
             if (!trabajador) {
                 return res.status(404).send('Trabajador no encontrado.');
             }
@@ -75,7 +75,7 @@ const obtenerATE = async (req, res) => {
             const fechaInicio = dayjs(dia).subtract(1, 'day').startOf('day').toDate();
             const fechaFin = dayjs(dia).endOf('day').toDate();
             // console.log(dia,fechaInicio,fechaFin);
-            const trabajador = await trabajador_MongooseModel.findOne({ Rut: tokenValido.token.rut }).lean();
+            const trabajador = await trabajador_MongooseModel.findOne({ Rut: { $eq: String(tokenValido.token.rut) } }).lean();
             if (!trabajador) {
                 return res.status(404).send('Trabajador no encontrado.');
             }
@@ -90,7 +90,7 @@ const obtenerATE = async (req, res) => {
             }).lean();
             const resultado = await Promise.all(asignaciones.map(async (asignacion) => {
                 const direccion = await DIRECCION.findById(asignacion.direccion);
-                const medidor = await MEDIDOR.findOne({ _id: direccion.NumeroMedidor });
+                const medidor = await MEDIDOR.findOne({ _id: { $eq: direccion.NumeroMedidor } });
                 const sector = await SECTOR.findById(direccion.NumeroSector);
                 const tipo = await TipoNovedad.findById(asignacion.tipo);
                 return {
@@ -183,7 +183,7 @@ const repsuestaATE = async (req, res) => {
             return res.status(400).send('No se ha subido ningún archivo');
         }
 
-        const resTipo = await tipoDocumento_MongooseModel.findOne({ value: tipo });
+        const resTipo = await tipoDocumento_MongooseModel.findOne({ value: { $eq: String(tipo) } });
         if (!resTipo) {
             console.log('Tipo de documento no encontrado');
             return res.status(400).send('Tipo de documento no encontrado');
@@ -215,12 +215,12 @@ const repsuestaATE = async (req, res) => {
             return res.status(404).send('Dirección no encontrada');
         }
 
-        const medidor = await MEDIDOR.findOne({ _id: direccion.NumeroMedidor });
+        const medidor = await MEDIDOR.findOne({ _id: { $eq: direccion.NumeroMedidor } });
         if (!medidor) {
             return res.status(404).send('Medidor no encontrado');
         }
 
-        const cliente = await CLIENTE.findOne({ _id: medidor.NumeroCliente });
+        const cliente = await CLIENTE.findOne({ _id: { $eq: medidor.NumeroCliente } });
         if (!cliente) {
             return res.status(404).send('Cliente no encontrado');
         }
@@ -231,7 +231,7 @@ const repsuestaATE = async (req, res) => {
 
         if (archivo.mimetype === 'image/jpeg' || archivo.mimetype === 'image/png'|| archivo.mimetype === 'image/jpg') {
             // Procesar imágenes en memoria con sharp
-            finalPath = path.join(uploadPath, fileName); // Renombrar extensión a .jpeg
+            finalPath = path.join(uploadPath, path.basename(fileName)); // Renombrar extensión a .jpeg
             await sharp(archivo.buffer)
                 .resize(1024, 1024, { fit: 'inside' }) // Redimensiona manteniendo proporción
                 .toFormat('jpeg', { quality: 80 }) // Convierte a JPEG con calidad 80%

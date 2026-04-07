@@ -14,10 +14,10 @@ const crearlectura = async (req, res) => {
     if (tokenValido.valid){   
         const { NumeroRuta, NumeroSector, NumeroMedidor, lectura, foto, clave} = req.body;
         try{
-            const trabajadorexistente = await trabajador.findOne({Rut: tokenValido.token.rut});
-            const sectorexistente = await sector.findOne({NumeroSector})
-            const rutaexistente = await ruta.findOne({NumeroRuta})
-            const medidorexistente = await medidor.findOne({NumeroMedidor})
+            const trabajadorexistente = await trabajador.findOne({ Rut: { $eq: String(tokenValido.token.rut) } });
+            const sectorexistente = await sector.findOne({ NumeroSector: { $eq: Number(NumeroSector) } })
+            const rutaexistente = await ruta.findOne({ NumeroRuta: { $eq: Number(NumeroRuta) } })
+            const medidorexistente = await medidor.findOne({ NumeroMedidor: { $eq: Number(NumeroMedidor) } })
             if (!sectorexistente) {
                 return res.status(404).send('Sector no encontrado');
             }
@@ -59,7 +59,7 @@ const obtenerlectura = async (req, res) => {
     if (tokenValido.valid) {   
         const { NumeroMedidor, fecha } = req.body;
         try {
-            const Medidor = await medidor.findOne({ NumeroMedidor }).lean();
+            const Medidor = await medidor.findOne({ NumeroMedidor: { $eq: Number(NumeroMedidor) } }).lean();
             if (!Medidor) {
                 return res.status(404).send('Medidor no encontrado.');
             }
@@ -71,7 +71,7 @@ const obtenerlectura = async (req, res) => {
                     $gte: fechaInicio, 
                     $lt: fechaFin 
                 },
-                NumeroMedidor: Medidor._id
+                NumeroMedidor: { $eq: Medidor._id }
             }).select('_id').lean(); // Seleccionamos solo el campo _id
 
             if (!lectura) {

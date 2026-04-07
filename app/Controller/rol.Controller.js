@@ -56,7 +56,7 @@ const rolesTemporales = async (req, res) => {
         const expires= new Date();
         expires.setHours(expires.getHours()+horas);
         try {
-            const trabajador = await trabajador_MongooseModel.findOne({_id:objetivo});
+            const trabajador = await trabajador_MongooseModel.findOne({ _id: { $eq: String(objetivo) } });
             trabajador.rolTemporal.rol=rol;
             trabajador.rolTemporal.expiracion=expires;
             await trabajador.save();
@@ -76,7 +76,7 @@ const darRol = async (req,res) => {
     if (tokenValido.valid){
         const {objetivo,rol}=req.body;
         try {
-            const trabajador = await trabajador_MongooseModel.findOne({_id:objetivo});
+            const trabajador = await trabajador_MongooseModel.findOne({ _id: { $eq: String(objetivo) } });
             trabajador.rol=rol;
             await trabajador.save();
             res.status(200).send('Rol asignado con éxito');
@@ -94,7 +94,7 @@ const modificarRol = async (req, res) => {
     if (tokenValido.valid){
         const {id,nombre, permisos} = req.body;
         try{
-            await Rol.findByIdAndUpdate(id, {nombre, permisos});
+            await Rol.findByIdAndUpdate(String(id), {nombre, permisos});
             res.send('Rol modificado con éxito');
         }catch (error) {
             res.status(500).send('Error interno del servidor: '+ error.message);

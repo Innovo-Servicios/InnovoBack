@@ -56,9 +56,9 @@ const crearcliente = async (req, res) => {
                 return res.status(400).send('Datos de cliente inválidos');
             }
 
-            const usuarioExistente = await cliente.findOne(
-                mongoose.sanitizeFilter({ NumeroCliente: numeroCliente })
-            );
+            const usuarioExistente = await cliente.findOne({
+                NumeroCliente: { $eq: Number(numeroCliente) }
+            });
             if (usuarioExistente) {
                 return res.status(400).send('El usuario ya existe');
             }
@@ -89,9 +89,9 @@ const obtenercliente = async (req, res) => {
                 return res.status(404).send('Cliente no encontrado');
             }
 
-            const clienteEncontrado = await cliente.findOne(
-                mongoose.sanitizeFilter({ NumeroCliente: numeroCliente })
-            );
+            const clienteEncontrado = await cliente.findOne({
+                NumeroCliente: { $eq: Number(numeroCliente) }
+            });
             if (clienteEncontrado) {
                 return res.status(200).json({ message: 'Cliente encontrado', cliente: clienteEncontrado });
             } else {
@@ -118,9 +118,9 @@ const eliminarCliente = async (req, res) => {
                 return res.status(404).send('Cliente no existente');
             }
 
-            const clienteExistente = await cliente.findOne(
-                mongoose.sanitizeFilter({ NumeroCliente: numeroCliente })
-            );
+            const clienteExistente = await cliente.findOne({
+                NumeroCliente: { $eq: Number(numeroCliente) }
+            });
             if (!clienteExistente) {
                 return res.status(404).send('Cliente no existente');
             }
@@ -131,21 +131,21 @@ const eliminarCliente = async (req, res) => {
             }
 
             // Eliminar direcciones asociadas
-            const direccionesEliminadas = await direccion.deleteMany(
-                mongoose.sanitizeFilter({ NumeroCliente: new mongoose.Types.ObjectId(clienteId) })
-            );
+            const direccionesEliminadas = await direccion.deleteMany({
+                NumeroCliente: { $eq: new mongoose.Types.ObjectId(clienteId) }
+            });
             // console.log(`${direccionesEliminadas.deletedCount} direcciones eliminadas.`);
 
             // Eliminar medidores asociados
-            const medidoresEliminados = await medidor.deleteMany(
-                mongoose.sanitizeFilter({ NumeroCliente: new mongoose.Types.ObjectId(clienteId) })
-            );
+            const medidoresEliminados = await medidor.deleteMany({
+                NumeroCliente: { $eq: new mongoose.Types.ObjectId(clienteId) }
+            });
             // console.log(`${medidoresEliminados.deletedCount} medidores eliminados.`);
 
             // Finalmente eliminar el cliente
-            await cliente.deleteOne(
-                mongoose.sanitizeFilter({ _id: new mongoose.Types.ObjectId(clienteId) })
-            );
+            await cliente.deleteOne({
+                _id: { $eq: new mongoose.Types.ObjectId(clienteId) }
+            });
 
             return res.status(200).send('Cliente y todos los registros asociados eliminados correctamente');
         } catch (error) {

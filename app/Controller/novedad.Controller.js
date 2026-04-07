@@ -20,7 +20,7 @@ const borrarNovedad = async (req, res) => {
         const tokenValido = await Token.validartoken(token);
         if (tokenValido.valid) {
             const { idNovedad } = req.body;
-            const novedad = await Novedad.findByIdAndDelete(idNovedad);
+            const novedad = await Novedad.findByIdAndDelete(String(idNovedad));
             if (!novedad) {
                 return res.status(404).send('Novedad no encontrada.');
             }
@@ -45,7 +45,7 @@ const modificarNovedad = async (req, res) => {
             if (!novedad) {
                 return res.status(404).send('Novedad no encontrada.');
             }
-            const Tipoexiste = await TipoNovedad.findOne({ _id: TipoNovedadConsulta });
+            const Tipoexiste = await TipoNovedad.findOne({ _id: { $eq: String(TipoNovedadConsulta) } });
             novedad.TipoNovedad = Tipoexiste._id;
             novedad.Fotografia = Fotografia;
             novedad.Lecturacorrecta = Lecturacorrecta;
@@ -112,15 +112,15 @@ const crearNovedad = async (req, res) => {
             }
             
             let finalPath;
-            const medidor = await medidor_MongooseModel.findOne({ NumeroMedidor: idMedidor });
+            const medidor = await medidor_MongooseModel.findOne({ NumeroMedidor: { $eq: Number(idMedidor) } });
             if (!medidor) {
                 return res.status(404).send('Medidor no encontrada.');
             }
-            const cliente = await cliente_MongooseModel.findOne({ _id: medidor.NumeroCliente });
+            const cliente = await cliente_MongooseModel.findOne({ _id: { $eq: medidor.NumeroCliente } });
             if (!cliente) {
                 return res.status(404).send('Cliente no encontrado.');
             }
-            const Tipoexiste = await TipoNovedad.findOne({ value: TipoNovedadConsulta });
+            const Tipoexiste = await TipoNovedad.findOne({ value: { $eq: String(TipoNovedadConsulta) } });
             if (!Tipoexiste) {
                 return res.status(404).send('Tipo de novedad no encontrado.');
             }
@@ -153,7 +153,7 @@ const crearNovedad = async (req, res) => {
                 const fileName = `CL_${cliente.NumeroCliente}_${Tipoexiste.value}.jpg`;
                 if (archivo.mimetype === 'image/jpeg' || archivo.mimetype === 'image/png'|| archivo.mimetype === 'image/jpg') {
                     // Procesar imágenes en memoria con sharp
-                    finalPath = path.join(uploadPath, fileName); // Renombrar extensión a .jpeg
+                    finalPath = path.join(uploadPath, path.basename(fileName)); // Renombrar extensión a .jpeg
     
                     await sharp(archivo.buffer)
                         .resize(1024, 1024, { fit: 'inside' }) // Redimensiona manteniendo proporción
@@ -161,16 +161,16 @@ const crearNovedad = async (req, res) => {
                         .toFile(finalPath);
                 } else {
                     // Guardar otros tipos de archivos directamente desde el buffer
-                    finalPath = path.join(uploadPath, fileName);
+                    finalPath = path.join(uploadPath, path.basename(fileName));
                     fs.writeFileSync(finalPath, archivo.buffer);
                 }
             }
 
-            const direccion = await direccion_MongooseModel.findOne({ NumeroMedidor: medidor._id })
+            const direccion = await direccion_MongooseModel.findOne({ NumeroMedidor: { $eq: medidor._id } })
             if (!direccion) {
                 return res.status(404).send('Dirección no encontrada.');
             }
-            const emisor = await trabajador_MongooseModel.findOne({ Rut: tokenValido.token.rut });
+            const emisor = await trabajador_MongooseModel.findOne({ Rut: { $eq: String(tokenValido.token.rut) } });
             const nuevaNovedad = new Novedad({
                 TipoNovedad: Tipoexiste._id,
                 emisor: emisor._id,
@@ -206,7 +206,7 @@ const hacernovedad = async (req, res) => {
 
             const inicioDelMes = fechaconsulta.startOf('month').toDate();
             const finDelMes = fechaconsulta.endOf('month').toDate();
-            const ruta = await ruta_MongooseModel.findOne({ NumeroRuta: Ruta });
+            const ruta = await ruta_MongooseModel.findOne({ NumeroRuta: { $eq: Number(Ruta) } });
             if (!ruta) {
                 return res.status(404).send('Ruta no encontrada.');
             }

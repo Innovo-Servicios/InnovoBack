@@ -30,7 +30,7 @@ const obtenerNotificaciones = async (req, res) => {
     if (tokenValido.valid) {
         try {
             const trabajador = await trabajador_MongooseModel.findOne({
-                Rut: rut,
+                Rut: { $eq: String(rut) },
             });
             if (!trabajador) {
                 return res.status(404).send('Trabajador no encontrado');
@@ -57,7 +57,7 @@ const obtenerNotificacionesDelUser = async (req, res) => {
   
     try {
       const { rut } = tokenValido.token;
-      const trabajador = await trabajador_MongooseModel.findOne({ Rut: rut });
+      const trabajador = await trabajador_MongooseModel.findOne({ Rut: { $eq: String(rut) } });
       
       if (!trabajador) {
         return res.status(404).send("Trabajador no encontrado");
@@ -111,7 +111,7 @@ const crearNotificacion = async (req, res) => {
     const { token, objetivo, tipo, titulo, mensaje, contenido, url } = req.body;
     const tokenValido = await Token.validartoken(token);
     if (tokenValido.valid) {
-        const restipo = await TipoNotificacion.findOne({ value: tipo });
+        const restipo = await TipoNotificacion.findOne({ value: { $eq: String(tipo) } });
         if (tipo === 'documento' && !url) {
             return res.status(400).send('Falta la URL del documento');
         }
@@ -186,7 +186,7 @@ const crearNotificacionDocumento = async (req, res) => {
     const { token, objetivo, tipo, titulo, mensaje, contenido } = req.body;
     const tokenValido = await Token.validartoken(token);
     if (tokenValido.valid) {
-        const restipo = await TipoNotificacion.findOne({ value: tipo });
+        const restipo = await TipoNotificacion.findOne({ value: { $eq: String(tipo) } });
         if (tipo === 'documento' && !url) {
             return res.status(400).send('Falta la URL del documento');
         }
@@ -225,7 +225,7 @@ const crearNotificacionDocumento = async (req, res) => {
             if (!fs.existsSync(uploadPath)) {
                 fs.mkdirSync(uploadPath, { recursive: true });
             }
-            const fileName = `file-${Date.now()}-${archivo.originalname}`;
+            const fileName = path.basename(`file-${Date.now()}-${archivo.originalname}`);
             let finalPath = path.join(uploadPath, fileName);
             if (
                 archivo.mimetype === 'image/jpeg' ||
@@ -314,8 +314,8 @@ const eliminarNotificacion = async (req, res) => {
     const tokenValido = await Token.validartoken(token);
     if (tokenValido.valid) {
         try {
-            const trabajador = await trabajador_MongooseModel.findOne({ Rut: tokenValido.token.rut });
-            const vista= await notificacion_vista_MongooseModel.findOne({trabajador:trabajador._id,notificacion:id});
+            const trabajador = await trabajador_MongooseModel.findOne({ Rut: { $eq: String(tokenValido.token.rut) } });
+            const vista= await notificacion_vista_MongooseModel.findOne({ trabajador: { $eq: trabajador._id }, notificacion: { $eq: String(id) } });
             if(!vista){
                 const registro= new notificacion_vista_MongooseModel({
                     trabajador:trabajador._id,
@@ -434,8 +434,8 @@ const detallesNotificacion = async (req, res) => {
         const trabajadoresVistos = await Promise.all(
             vistos.map(async (trabajador) => {
                 const vista = await notificacion_vista_MongooseModel.findOne({
-                    trabajador: trabajador._id,
-                    notificacion: idNotificacion,
+                    trabajador: { $eq: trabajador._id },
+                    notificacion: { $eq: String(idNotificacion) },
                 });
                 return {
                     rut: trabajador.Rut,

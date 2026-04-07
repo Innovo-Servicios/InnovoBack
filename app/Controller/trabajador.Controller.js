@@ -43,11 +43,11 @@ const listarTrabajadoresConectados = (req, res) => {
 const creartrabajador = async (req, res) => {
     const { rut, nombre, cargo, correo, clave } = req.body;
     try {
-        const trabajadorExistente = await TrabajadorModel.findOne({ Rut: rut ,Nombre:nombre});
+        const trabajadorExistente = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) }, Nombre: { $eq: String(nombre) } });
         if (trabajadorExistente) {
             return res.status(400).send('El trabajador ya existe');
         }
-        const correoExistente = await TrabajadorModel.findOne({ correo });
+        const correoExistente = await TrabajadorModel.findOne({ correo: { $eq: String(correo) } });
         if (correoExistente) {
             return res.status(400).send('El correo ya existe');
         }
@@ -57,7 +57,7 @@ const creartrabajador = async (req, res) => {
         if (!Correo.isEmail(correo)) {
             return res.status(405).send('El correo no es valido');
         }
-        const rol = await Rol.findOne({ nombre: cargo });
+        const rol = await Rol.findOne({ nombre: { $eq: String(cargo) } });
         const nvotrabajador = new TrabajadorModel({
             Rut: rut,
             Nombre: nombre,
@@ -81,7 +81,7 @@ const modificardatostrabajador = async (req, res) => {
         const { Nuevonombre, Nuevocargo, Nuevocorreo, Nuevaclave } = req.body;
         try {
             // Buscar el trabajador por Rut
-            const trabajador = await TrabajadorModel.findOne({ Rut:rut });
+            const trabajador = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) } });
             if (!trabajador) {
                 return res.status(404).send('Trabajador no existente');
             }
@@ -107,12 +107,12 @@ const eliminartrabajador = async (req, res) => {
     if (tokenValido.valid){ 
         try {
             const { rut } = req.body;
-            const trabajadorExistente = await TrabajadorModel.findOne({Rut:rut});
+            const trabajadorExistente = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) } });
             if (!trabajadorExistente) {
                 return res.status(400).send('El trabajador no existe'); 
             }
             else{
-                const trabajadorExistente = await TrabajadorModel.deleteOne({Rut:rut});
+                const trabajadorExistente = await TrabajadorModel.deleteOne({ Rut: { $eq: String(rut) } });
                 if (trabajadorExistente) {
                     return res.send('Trabajador eliminado correctamente');
                 }
@@ -130,7 +130,7 @@ const login = async (req, res) => {
     try {
         // console.log('Iniciando sesión con:', rut, clave,ID, tokenPush);
         // Verificar que el usuario existe y que la clave es correcta
-        const usuarioExistente = await TrabajadorModel.findOne({ Rut: rut, clave: clave });
+        const usuarioExistente = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) }, clave: { $eq: String(clave) } });
         if (usuarioExistente) {
             const rol = await Rol.findById(usuarioExistente.rol);
             const permisos = await Promise.all(
@@ -164,7 +164,7 @@ const updatePushToken = async (req, res) => {
     }
     const { rut } = tokenValido.token;
     try {
-        const trabajador = await TrabajadorModel.findOne({ Rut: rut });
+        const trabajador = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) } });
         if (!trabajador) {
             return res.status(404).send('Trabajador no encontrado');
         }
@@ -193,7 +193,7 @@ const obtenerTrabajador = async (req, res) => {
 
         // Buscar al trabajador por su RUT y poblar las notificaciones
         const trabajador = await TrabajadorModel.findOne(
-            { Rut: rut },
+            { Rut: { $eq: String(rut) } },
             "Rut Nombre cargo apoyo correo notificaciones documentos rol rolTemporal"
         ).populate({
             path: 'notificaciones',
@@ -231,7 +231,7 @@ const datosTrabajador = async (req, res) => {
         if (!tokenValido.valid) {
             return res.status(401).send('Token inválido');
         }
-        let trabajador = await TrabajadorModel.findOne({ Rut: rut }).populate({
+        let trabajador = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) } }).populate({
             path: 'documentos',
             model: 'documentos', // Nombre del modelo de documentos
             populate: {
@@ -254,7 +254,7 @@ const datosTrabajador = async (req, res) => {
 
         const notificaciones= await Promise.all(trabajador.notificaciones.map(async notificacion => {
             const notificacionDB = await notificaciones_MongooseModel.findById(notificacion);   
-            const vistaDB= await notificacion_vista_MongooseModel.findOne({trabajador: trabajador._id, notificacion: notificacion});
+            const vistaDB= await notificacion_vista_MongooseModel.findOne({ trabajador: { $eq: trabajador._id }, notificacion: { $eq: String(notificacion) } });
             const tiponoti= await TipoNotificacion.findById(notificacionDB.tipo);
             const modelo = {
                 _id: notificacionDB._id,
@@ -287,7 +287,7 @@ const datosApp = async (req, res) => {
         if (!tokenValido.valid) {
             return res.status(401).send('Token inválido');
         }
-        let trabajador = await TrabajadorModel.findOne({ Rut: tokenValido.token.rut }).populate({
+        let trabajador = await TrabajadorModel.findOne({ Rut: { $eq: String(tokenValido.token.rut) } }).populate({
             path: 'documentos',
             model: 'documentos', // Nombre del modelo de documentos
             populate: {
@@ -325,7 +325,7 @@ const fotoTrabajador = async (req, res) => {
             return res.status(401).send('Token inválido');
         }
 
-        const trabajador = await TrabajadorModel.findOne({ Rut: tokenValido.token.rut });
+        const trabajador = await TrabajadorModel.findOne({ Rut: { $eq: String(tokenValido.token.rut) } });
         if (!trabajador) {
             return res.status(404).send('Trabajador no encontrado');
         }
@@ -361,7 +361,7 @@ const fotoTrabajador = async (req, res) => {
             fs.mkdirSync(uploadPath, { recursive: true });
         }
 
-        const finalPath = path.join(uploadPath, filename + '.jpeg');
+        const finalPath = path.join(uploadPath, path.basename(filename + '.jpeg'));
 
         await sharp(archivo.buffer)
             .resize(1024, 1024, { fit: 'inside' }) // Redimensiona manteniendo proporción

@@ -25,10 +25,10 @@ const registroNotificacion = async (req, res) => {
             const { idNotificacion } = req.body;
             
             const trabajador = await trabajador_MongooseModel.findOne({
-                Rut: tokenValido.token.rut,
+                Rut: { $eq: String(tokenValido.token.rut) },
             });
             const notificacion = await notificaciones_MongooseModel.findOne({
-                _id: idNotificacion,
+                _id: { $eq: String(idNotificacion) },
             });
             if (trabajador && notificacion) {
                 const notificacionVista = new notificacion_vista_MongooseModel({
@@ -39,7 +39,7 @@ const registroNotificacion = async (req, res) => {
                         .format('DD-MM-YYYY'),
                 });
                 await trabajador_MongooseModel.updateOne(
-                    { Rut: tokenValido.token.rut },
+                    { Rut: { $eq: String(tokenValido.token.rut) } },
                     {
                         $pull: { notificaciones: idNotificacion },
                         $push: { vistas: idNotificacion },
