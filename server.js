@@ -160,22 +160,28 @@ io.on('connection', (socket) => {
         console.error("❌ No se pudo extraer el RUT del token.");
         return;
       }
+      // Validar formato RUT (solo dígitos, puntos, guión y K) para prevenir inyección
+      const safeRut = String(rut).trim();
+      if (!/^[0-9Kk.\-]{5,12}$/.test(safeRut)) {
+        console.error(`❌ RUT con formato inválido detectado: ${safeRut}`);
+        return;
+      }
       // Buscar el nombre del trabajador en MongoDB
-      const trabajador = await trabajador_MongooseModel.findOne({ Rut: String(rut) }).select('Nombre');
+      const trabajador = await trabajador_MongooseModel.findOne({ Rut: safeRut }).select('Nombre');
 
       if (!trabajador) {
-        console.error(`❌ No se encontró el trabajador con RUT: ${rut}`);
+        console.error(`❌ No se encontró el trabajador con RUT: ${safeRut}`);
         return;
       }
 
       usuariosConectados[socket.id] = {
-        id_trabajador: rut,
+        id_trabajador: safeRut,
         nombre: trabajador.Nombre, // Guardamos el nombre
         ubicacion,
       };
 
       // actualizarUV();
-      socket.join(String(rut));
+      socket.join(safeRut); // nosonar - false positive for path.join
       console.log(`✅ Trabajador registrado: ${trabajador.Nombre} (${rut})`);
 
       // Emitir la actualización a todos los clientes conectados

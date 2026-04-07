@@ -136,18 +136,31 @@ const crearDocumento = async (req, res) => {
         }
 
         let finalPath;
-        const safeFileName = path.basename(`file-${Date.now()}-${archivo.originalname}`);
+        // Sanitize the filename stripping any directory components from user-supplied name
+        const rawName = `file-${Date.now()}-${archivo.originalname}`;
+        const safeFileName = path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_');
 
         if (archivo.mimetype === 'image/jpeg' || archivo.mimetype === 'image/png') {
             // Procesar imágenes en memoria con sharp
-            finalPath = path.join(uploadPath, safeFileName.replace(/\.[^/.]+$/, '.jpeg')); // Renombrar extensión a .jpeg
+            // Build path exclusively from the trusted uploadPath + safe static filename
+            const imageFileName = safeFileName.replace(/\.[^/.]+$/, '.jpeg');
+            finalPath = path.join(uploadPath, imageFileName);
+        } else {
+            // Guardar otros tipos de archivos directamente desde el buffer
+            finalPath = path.join(uploadPath, safeFileName);
+        }
+
+        // Estricta verificación de no-traversal para el analizador de código
+        if (!finalPath.startsWith(uploadPath + path.sep)) {
+            throw new Error("Ruta de archivo calculada inválida.");
+        }
+
+        if (archivo.mimetype === 'image/jpeg' || archivo.mimetype === 'image/png') {
             await sharp(archivo.buffer)
                 .resize(1024, 1024, { fit: 'inside' }) // Redimensiona manteniendo proporción
                 .toFormat('jpeg', { quality: 80 }) // Convierte a JPEG con calidad 80%
                 .toFile(finalPath);
         } else {
-            // Guardar otros tipos de archivos directamente desde el buffer
-            finalPath = path.join(uploadPath, safeFileName);
             fs.writeFileSync(finalPath, archivo.buffer);
         }
 

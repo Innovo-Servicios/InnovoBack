@@ -162,14 +162,20 @@ const descarga_ATE = (req, res) => {
           return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: stderr });
         }
   
-        let pathexcel = stdout.trim(); // Ruta del archivo generada por el script Python
+        const rawOutput = stdout.trim(); // Ruta del archivo generada por el script Python
   
-        if (!pathexcel) {
+        if (!rawOutput) {
           return res.status(500).json({ message: 'No se generó un archivo válido para descargar' });
         }
 
+        // Construir la ruta desde el directorio permitido usando sólo el nombre base
+        // para evitar path traversal o file inclusion desde fuentes externas
+        const allowedDir = path.resolve(__dirname, '../../../');
+        const safeFilename = path.basename(rawOutput);
+        const resolvedPath = path.join(allowedDir, safeFilename);
+
         // Enviar el archivo como descarga
-        res.download(pathexcel, (err) => {
+        res.download(resolvedPath, (err) => {
           if (err) {
             // console.error('Error al enviar el archivo:', err);
             return res.status(500).json({ message: 'Error al descargar el archivo', error: err.message });
@@ -199,13 +205,20 @@ const descarga_ATE = (req, res) => {
           return res.status(500).json({ message: 'Error al ejecutar el script de Python', error: stderr });
         }
   
-        let pathexcel = stdout.trim(); // Eliminar espacios en blanco de la salida
+        const rawOutput = stdout.trim(); // Eliminar espacios en blanco de la salida
   
-        if (!pathexcel) {
+        if (!rawOutput) {
           return res.status(500).json({ message: 'No se generó un archivo válido para descargar' });
         }
+
+        // Construir la ruta desde el directorio permitido usando sólo el nombre base
+        // para evitar path traversal o file inclusion desde fuentes externas
+        const allowedDir = path.resolve(__dirname, '../../../');
+        const safeFilename = path.basename(rawOutput);
+        const resolvedPath = path.join(allowedDir, safeFilename);
+
         // Enviar el archivo como descarga
-        res.download(pathexcel, (err) => {
+        res.download(resolvedPath, (err) => {
           if (err) {
             // console.error('Error al enviar el archivo:', err);
             return res.status(500).json({ message: 'Error al descargar el archivo', error: err.message });
