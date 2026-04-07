@@ -1,6 +1,6 @@
 const XLSX = require('xlsx');
 const path = require('path');
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const fs = require('fs');
 
 
@@ -11,7 +11,8 @@ const processExcelFile = (req, res) => {
     }
 
     // Leer el archivo Excel
-    const filePath = path.join(__dirname, '../../uploads', req.file.filename);
+    const safeFilename = path.basename(req.file.filename);
+    const filePath = path.join(__dirname, '../../uploads', safeFilename);
     const workbook = XLSX.readFile(filePath);
 
     // Leer la primera hoja
@@ -44,7 +45,7 @@ const excelAsignaciones = (req, res) => {
       if (!fs.existsSync(filePath)) {
           fs.mkdirSync(filePath, { recursive: true });
       }
-      const fileName = `${archivo.originalname}`;
+      const fileName = path.basename(archivo.originalname);
       const finalPath = path.join(filePath, fileName);
       
       if (fs.existsSync(finalPath)) {
@@ -69,7 +70,7 @@ const excelAsignaciones = (req, res) => {
       // Call Python script
       const pythonScriptPath = path.join(__dirname, '../../../Asistente', 'Funciones.py');
       // console.log('Python script path:', pythonScriptPath); // Debugging log
-      exec(`python3 ${pythonScriptPath} asignar_sector "${finalPath}"`, (error, stdout, stderr) => {
+      execFile('python3', [pythonScriptPath, 'asignar_sector', finalPath], (error, stdout, stderr) => {
           if (error) {
               // // console.error(`Error al ejecutar el script de Python: ${error.message}`);
               return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: error.message });
@@ -101,7 +102,7 @@ const excelAte = (req, res) => {
       if (!fs.existsSync(filePath)) {
           fs.mkdirSync(filePath, { recursive: true });
       }
-      const fileName = `${archivo.originalname}`;
+      const fileName = path.basename(archivo.originalname);
       const finalPath = path.join(filePath, fileName);
       
       if (fs.existsSync(finalPath)) {
@@ -126,7 +127,7 @@ const excelAte = (req, res) => {
       // Call Python script
       const pythonScriptPath = path.join(__dirname, '../../../Asistente', 'Funciones.py');
       // console.log('Python script path:', pythonScriptPath); // Debugging log
-      exec(`python3 ${pythonScriptPath} asignar_ate "${finalPath}"`, (error, stdout, stderr) => {
+      execFile('python3', [pythonScriptPath, 'asignar_ate', finalPath], (error, stdout, stderr) => {
           if (error) {
               // // console.error(`Error al ejecutar el script de Python: ${error.message}`);
               return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: error.message });
@@ -152,7 +153,7 @@ const descarga_ATE = (req, res) => {
   
       // console.log(`Ejecutando: python3 ${pythonScriptPath} excel_ate --fecha_inicio ${fecha}`);
       
-      exec(`python3 ${pythonScriptPath} excel_ate --fecha_inicio ${fecha}`, (error, stdout, stderr) => {
+      execFile('python3', [pythonScriptPath, 'excel_ate', '--fecha_inicio', fecha], (error, stdout, stderr) => {
         if (error) {
           return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: error.message });
         }
@@ -188,7 +189,7 @@ const descarga_ATE = (req, res) => {
   
       const pythonScriptPath = path.join(__dirname, '../../../Asistente', 'Funciones.py');
   
-      exec(`python3 ${pythonScriptPath} excel_novedad --fecha_inicio ${fechainicio} --fecha_fin ${fechafin}`, (error, stdout, stderr) => {
+      execFile('python3', [pythonScriptPath, 'excel_novedad', '--fecha_inicio', fechainicio, '--fecha_fin', fechafin], (error, stdout, stderr) => {
         if (error) {
           return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: error.message });
         }
