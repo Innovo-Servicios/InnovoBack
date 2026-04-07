@@ -21,26 +21,26 @@ const asignarsector = async (req, res) => {
             req.body;
         try {
             const nombreTrabajador = await trabajador.findOne({
-                Rut: trabajadorRut,
+                Rut: { $eq: String(trabajadorRut) },
             });
             if (!nombreTrabajador) {
                 return res.status(404).send('Trabajador no encontrado');
             }
 
-            const sector = await SECTOR.findOne({ NumeroSector: sectorNumero });
+            const sector = await SECTOR.findOne({ NumeroSector: { $eq: Number(sectorNumero) } });
             if (!sector) {
                 return res.status(404).send('Sector no encontrado');
             }
 
             const apoyo = apoyoRut
-                ? await trabajador.findOne({ Rut: apoyoRut })._id
+                ? await trabajador.findOne({ Rut: { $eq: String(apoyoRut) } })._id
                 : null;
 
             const asignacionExiste = await Asignacion.findOne({
-                NumeroSector: sector._id,
-                Trabajador: nombreTrabajador._id,
-                fecha_asignacion: fechaconsulta,
-                tipo: tipo,
+                NumeroSector: { $eq: sector._id },
+                Trabajador: { $eq: nombreTrabajador._id },
+                fecha_asignacion: { $eq: fechaconsulta },
+                tipo: { $eq: String(tipo) },
             });
             if (asignacionExiste) {
                 return res.status(400).send('Sector ya asignado');
@@ -90,7 +90,7 @@ const obtenerAsigMes = async (req, res) => {
                 .subtract(3, 'hours')
                 .toDate();
             const trabajadorexiste = await trabajador.findOne({
-                Rut: tokenValido.token.rut,
+                Rut: { $eq: String(tokenValido.token.rut) },
             });
             if (!trabajadorexiste) {
                 return res.status(404).send('Trabajador no existente');
@@ -148,9 +148,9 @@ const obtenerAsignacion = async (req, res) => {
         const { NumeroSector, fecha } = req.body;
         try {
             const trabajadorexiste = await trabajador.findOne({
-                Rut: tokenValido.token.rut,
+                Rut: { $eq: String(tokenValido.token.rut) },
             });
-            const sectorexiste = await SECTOR.findOne({ NumeroSector });
+            const sectorexiste = await SECTOR.findOne({ NumeroSector: { $eq: Number(NumeroSector) } });
             if (!sectorexiste) {
                 return res.status(404).send('Sector no existente');
             }
@@ -216,16 +216,16 @@ const modificarasigancion = async (req, res) => {
         const { Nuevotrabajador, Nuevoapoyo, idAsignacion } = req.body;
         try {
             const nuevaasignacion = await Asignacion.findOne({
-                _id: idAsignacion,
+                _id: { $eq: String(idAsignacion) },
             });
             const Trabajador = await trabajador.findOne({
-                Rut: Nuevotrabajador,
+                Rut: { $eq: String(Nuevotrabajador) },
             });
             if (!Trabajador) {
                 return res.status(404).send('Trabajador no existente');
             }
             const apoyo = Nuevoapoyo
-                ? await trabajador.findOne({ Rut: Nuevoapoyo })
+                ? await trabajador.findOne({ Rut: { $eq: String(Nuevoapoyo) } })
                 : null;
             nuevaasignacion.Trabajador = Trabajador._id;
             nuevaasignacion.apoyo = apoyo ? apoyo._id : null;
@@ -248,11 +248,11 @@ const asignarApoyo = async (req, res) => {
     if (tokenValido.valid) {
         const { rut, sector, fechainicio, fechafin } = req.body;
         try {
-            const trabajadorExiste = await trabajador.findOne({ Rut: rut });
+            const trabajadorExiste = await trabajador.findOne({ Rut: { $eq: String(rut) } });
             if (!trabajadorExiste) {
                 return res.status(404).send('Trabajador no encontrado');
             }
-            const sectorExiste = await SECTOR.findOne({ _id: sector });
+            const sectorExiste = await SECTOR.findOne({ _id: { $eq: String(sector) } });
             if (!sectorExiste) {
                 return res.status(404).send('Sector no encontrado');
             }

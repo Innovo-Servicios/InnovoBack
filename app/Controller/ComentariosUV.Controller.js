@@ -1,5 +1,28 @@
+const mongoose = require('mongoose');
 const Token = require('../Controller/token.Controller.js')
 const { ComentariosUV: ComentariosUVModel } = require('../Model/uvComentario_Mongoose.js');
+
+const normalizeRequiredString = (value) => {
+    if (typeof value !== 'string') {
+        return null;
+    }
+
+    const normalizedValue = value.trim();
+    return normalizedValue === '' ? null : normalizedValue;
+};
+
+const normalizeObjectId = (value) => {
+    if (!(typeof value === 'string' || value instanceof mongoose.Types.ObjectId)) {
+        return null;
+    }
+
+    const normalizedValue = String(value).trim();
+    if (normalizedValue === '' || !mongoose.isValidObjectId(normalizedValue)) {
+        return null;
+    }
+
+    return normalizedValue;
+};
 
 const listarComentariosUV = async (req, res) => {
     try {
@@ -24,12 +47,19 @@ const crearComentarioUV = async (req, res) => {
     try {
         const tokenValido = await Token.validartoken(token);
         if (tokenValido.valid) {
-            const comentarioExistente = await ComentariosUVModel.findOne({ value: comentario });
+            const comentarioNormalizado = normalizeRequiredString(comentario);
+            if (!comentarioNormalizado) {
+                return res.status(400).send('Comentario inválido');
+            }
+
+            const comentarioExistente = await ComentariosUVModel.findOne(
+                mongoose.sanitizeFilter({ value: comentarioNormalizado })
+            );
             if (comentarioExistente) {
                 return res.status(400).send('El comentario ya existe');
             }
             const nuevoComentario = new ComentariosUVModel({
-                value: comentario
+                value: comentarioNormalizado
             });
             await nuevoComentario.save();
             return res.status(201).send('Comentario registrado correctamente');
@@ -47,7 +77,14 @@ const eliminarComentarioUV = async (req, res) => {
     try {
         const tokenValido = await Token.validartoken(token);
         if (tokenValido.valid) {
-            const comentario = await ComentariosUVModel.findByIdAndDelete(id);
+            const comentarioId = normalizeObjectId(id);
+            if (!comentarioId) {
+                return res.status(404).send('Comentario no encontrado');
+            }
+
+            const comentario = await ComentariosUVModel.findOneAndDelete(
+                mongoose.sanitizeFilter({ _id: new mongoose.Types.ObjectId(comentarioId) })
+            );
             if (comentario) {
                 return res.status(200).send('Comentario eliminado correctamente');
             } else {
