@@ -1,5 +1,5 @@
-const jwt = require('jsonwebtoken');
-const key = 'clave';
+const bcrypt = require('bcryptjs');
+const { z } = require('zod');
 const { validate, format } = require('rut.js')
 const Correo = require('validator');
 const { trabajador_MongooseModel: TrabajadorModel } = require('../Model/trabajador_Mongoose.js');
@@ -16,12 +16,33 @@ const sharp = require('sharp');
 const path = require('path');
 const fs = require('fs');
 
+const workerSchema = z.object({
+    rut: z.string().trim().min(1),
+    nombre: z.string().trim().min(2),
+    cargo: z.enum(['administracion', 'lector', 'supervisor', 'inspector']),
+    correo: z.string().trim().email(),
+    clave: z.string().min(8),
+});
+
+const loginSchema = z.object({
+    rut: z.string().trim().min(1),
+    clave: z.string().min(1),
+    ID: z.string().trim().optional(),
+    tokenPush: z.string().trim().optional(),
+});
+
+const isHashedPassword = (value) =>
+    typeof value === 'string' && /^\$2[aby]\$\d{2}\$/.test(value);
+
+const hashPassword = async (plainPassword) => bcrypt.hash(plainPassword, 12);
+const sharedConnectedWorkers = global.usuariosConectados || {};
+
 const listarTrabajadores = async (req, res) => {
     const {  token } = req.body;
     const tokenValido = await Token.validartoken(token);
     if (tokenValido.valid) {
         try {
-            const trabajadores = await TrabajadorModel.find();
+            const trabajadores = await TrabajadorModel.find().select('-clave -refreshTokens -sessionVersion -tokenPush -ID');
             res.status(200).send(trabajadores);
         }
 
@@ -34,14 +55,19 @@ const listarTrabajadores = async (req, res) => {
     }
 };
 const listarTrabajadoresConectados = (req, res) => {
-    const trabajadores = Object.values(usuariosConectados).map((u) => ({
+    const trabajadores = Object.values(sharedConnectedWorkers).map((u) => ({
       id: u.id_trabajador,
       ubicacion: u.ubicacion,
     }));
     res.status(200).send(trabajadores);
 };
 const creartrabajador = async (req, res) => {
-    const { rut, nombre, cargo, correo, clave } = req.body;
+    const parsedWorker = workerSchema.safeParse(req.body);
+    if (!parsedWorker.success) {
+        return res.status(400).send('Datos de trabajador inválidos');
+    }
+
+    const { rut, nombre, cargo, correo, clave } = parsedWorker.data;
     try {
         const trabajadorExistente = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) }, Nombre: { $eq: String(nombre) } });
         if (trabajadorExistente) {
@@ -58,16 +84,23 @@ const creartrabajador = async (req, res) => {
             return res.status(405).send('El correo no es valido');
         }
         const rol = await Rol.findOne({ nombre: { $eq: String(cargo) } });
+        const passwordHash = await hashPassword(clave);
         const nvotrabajador = new TrabajadorModel({
             Rut: rut,
             Nombre: nombre,
             cargo,
             correo,
-            clave,
+            clave: passwordHash,
             rol: rol._id
         });
         await nvotrabajador.save();
-        req.io.emit('nuevo-trabajador', nvotrabajador);
+        req.io.to('role:administracion').emit('nuevo-trabajador', {
+            _id: nvotrabajador._id,
+            Rut: nvotrabajador.Rut,
+            Nombre: nvotrabajador.Nombre,
+            cargo: nvotrabajador.cargo,
+            correo: nvotrabajador.correo,
+        });
         return res.status(201).send('Trabajador registrado correctamente');
     } catch (error) {
         // console.error('Error al registrar Trabajador:', error);
@@ -89,7 +122,7 @@ const modificardatostrabajador = async (req, res) => {
             if (Nuevonombre){ trabajador.Nombre = Nuevonombre};
             if (Nuevocargo){ trabajador.cargo = Nuevocargo};
             if (Nuevocorreo){ trabajador.correo = Nuevocorreo};
-            if (Nuevaclave){ trabajador.clave = Nuevaclave};
+            if (Nuevaclave){ trabajador.clave = await hashPassword(String(Nuevaclave))};
             await trabajador.save();
             req.io.emit('updateWorker');
             return res.status(201).send('Datos trabajador modificados correctamente');
@@ -126,32 +159,66 @@ const eliminartrabajador = async (req, res) => {
     }
 };
 const login = async (req, res) => {
-    const { rut, clave, ID, tokenPush} = req.body; // Asegúrate de que 'rut' y 'clave' son los nombres correctos que se envían desde el cliente
+    const parsedLogin = loginSchema.safeParse(req.body);
+    if (!parsedLogin.success) {
+        return res.status(400).send('Credenciales inválidas');
+    }
+
+    const { rut, clave, ID, tokenPush } = parsedLogin.data;
     try {
-        // console.log('Iniciando sesión con:', rut, clave,ID, tokenPush);
-        // Verificar que el usuario existe y que la clave es correcta
-        const usuarioExistente = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) }, clave: { $eq: String(clave) } });
-        if (usuarioExistente) {
-            const rol = await Rol.findById(usuarioExistente.rol);
-            const permisos = await Promise.all(
-                rol.permisos.map(async permiso => {
-                    return await Permiso.findById(permiso, 'nombre descripcion');
-                })
-            );
-            const userData = {
-                nombre: rol.nombre,
-                permisos
-            };
-            const tokenres = await Token.crearToken(req.body);
-            usuarioExistente.tokenPush = tokenPush;
-            usuarioExistente.ID = ID;
-            await usuarioExistente.save();
-            return res.send(JSON.stringify({token: tokenres, rol:userData}));
-        } else {
-            return res.status(400).send('Correo o clave no proporcionados');
+        const usuarioExistente = await TrabajadorModel.findOne({
+            Rut: { $eq: String(rut) },
+        });
+
+        if (!usuarioExistente) {
+            return res.status(401).send('Credenciales inválidas');
         }
+
+        const storedPassword = String(usuarioExistente.clave || '');
+        const passwordMatches = isHashedPassword(storedPassword)
+            ? await bcrypt.compare(String(clave), storedPassword)
+            : storedPassword === String(clave);
+
+        if (!passwordMatches) {
+            return res.status(401).send('Credenciales inválidas');
+        }
+
+        if (!isHashedPassword(storedPassword)) {
+            usuarioExistente.clave = await hashPassword(String(clave));
+        }
+
+        const rol = await Rol.findById(usuarioExistente.rol);
+        const permisos = await Promise.all(
+            (rol?.permisos || []).map(async permiso => {
+                return await Permiso.findById(permiso, 'nombre descripcion');
+            })
+        );
+        const userData = {
+            nombre: rol?.nombre || usuarioExistente.cargo,
+            permisos: permisos.filter(Boolean),
+        };
+
+        if (tokenPush) {
+            usuarioExistente.tokenPush = tokenPush;
+        }
+        if (ID) {
+            usuarioExistente.ID = ID;
+        }
+
+        const sessionTokens = await Token.issueSessionTokens(
+            usuarioExistente,
+            ID || usuarioExistente.ID || undefined
+        );
+
+        Token.setRefreshTokenCookie(res, sessionTokens.refreshToken);
+
+        return res.json({
+            token: sessionTokens.accessToken,
+            refreshToken: ID ? sessionTokens.refreshToken : undefined,
+            rol: userData,
+            deviceId: sessionTokens.deviceId,
+        });
     } catch (error) {
-        // console.error('Error al iniciar sesión:', error);
         res.status(500).send('Error interno del servidor: ' + error.message);
     }
 };

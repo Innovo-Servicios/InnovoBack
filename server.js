@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http'); // Agregado
 const { Server } = require('socket.io'); // Agregado
 require('dotenv').config();
+const cookieParser = require('cookie-parser');
 const db = require('./app/Model/server.js');
 const cron = require('node-cron');
 const { trabajador_MongooseModel } = require('./app/Model/trabajador_Mongoose.js');
@@ -17,14 +18,43 @@ const server = http.createServer(app);
 const { execFile } = require('child_process');
 const { time } = require('console');
 const _ = require('lodash');
-const jwt = require("jsonwebtoken");
 const path = require('path');
 const axios = require('axios');
 const helmet = require('helmet');
 const {pushNotification,crearNotificacion} = require('./app/Controller/notificaciones.Controller.js');
 const moment = require('moment-timezone');
 const mongoSanitize = require('express-mongo-sanitize');
-const key = process.env.JWT_SECRET;
+const { validartoken } = require('./app/Controller/token.Controller.js');
+
+const parseAllowedOrigins = (rawOrigins) =>
+  String(rawOrigins || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+const allowedOrigins = parseAllowedOrigins(
+  process.env.ALLOWED_ORIGINS || 'http://localhost:3000,https://provider.blocktype.cl'
+);
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error('Origen no permitido por CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+};
+
+const isPrivilegedRole = (cargo) =>
+  ['administracion', 'supervisor'].includes(String(cargo || '').trim().toLowerCase());
+
+const isValidLocation = (location) =>
+  location &&
+  Number.isFinite(Number(location.lat)) &&
+  Number.isFinite(Number(location.lng));
 
 
 const ateatrasada = async () => {
@@ -81,20 +111,25 @@ cron.schedule('0 2 * * *', actualizarUV);
 
 // Configurar Socket.IO
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
+  cors: corsOptions,
 });
-app.use(helmet());
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+app.use(cookieParser());
+app.use(cors(corsOptions));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(mongoSanitize());
 
 // Conexión a MongoDB
-const uri = `mongodb://${process.env.MONGO_USER}:${encodeURIComponent(process.env.MONGO_PASSWORD)}@${process.env.MONGO_HOST}/${process.env.MONGO_DATABASE}`;
-let usuariosConectados = {}; // Lista local en memoria
+const authSource = process.env.MONGO_AUTH_SOURCE
+  ? `?authSource=${encodeURIComponent(process.env.MONGO_AUTH_SOURCE)}`
+  : '';
+const uri = `mongodb://${process.env.MONGO_USER}:${encodeURIComponent(process.env.MONGO_PASSWORD)}@${process.env.MONGO_HOST}/${process.env.MONGO_DATABASE}${authSource}`;
+global.usuariosConectados = global.usuariosConectados || {};
+let usuariosConectados = global.usuariosConectados; // Lista local en memoria compartida
 
 db.mongoose
   .connect(uri)
@@ -120,8 +155,6 @@ app.use((req, res, next) => {
 app.use('/IMG_ATES', express.static(path.join(__dirname, './IMG_ATES')));
 app.use('/IMG_NOVEDADES', express.static(path.join(__dirname, './IMG_NOVEDADES')));
 app.use('/IMG_PERFILES', express.static(path.join(__dirname, './IMG_PERFILES')));
-app.use('/DOCS_NOTIFICACIONES', express.static(path.join(__dirname, './DOCS_NOTIFICACIONES')));
-app.use('/TRABAJADORES', express.static(path.join(__dirname, '../TRABAJADORES')));
 // Cargar las rutas
 require('./app/Router/main.router')(app);
 
@@ -145,32 +178,56 @@ const enviarNotificacion = (titulo, cuerpo, data = {}) => {
     data,
     timestamp: new Date().toISOString(),
   };
-  io.emit('notificacion', notification); // Enviar a todos los clientes
+  io.to('role:administracion').to('role:supervisor').emit('notificacion', notification);
 };
+
+io.use(async (socket, next) => {
+  try {
+    const token =
+      socket.handshake.auth?.token ||
+      socket.handshake.query?.token;
+
+    if (!token || typeof token !== 'string') {
+      return next(new Error('No autorizado'));
+    }
+
+    const tokenValido = await validartoken(token);
+    if (!tokenValido.valid || !tokenValido.user) {
+      return next(new Error('No autorizado'));
+    }
+
+    socket.data.user = {
+      id: String(tokenValido.user._id),
+      rut: tokenValido.user.Rut,
+      nombre: tokenValido.user.Nombre,
+      cargo: tokenValido.user.cargo,
+      token,
+    };
+
+    return next();
+  } catch (error) {
+    return next(new Error('No autorizado'));
+  }
+});
 
 // Manejo de eventos de conexión  de WebSocket
 io.on('connection', (socket) => {
-  console.log(`Cliente conectado: ${socket.id}`);
+  const currentUser = socket.data.user;
+  socket.join(`user:${currentUser.id}`);
+  socket.join(`worker:${currentUser.rut}`);
+  socket.join(`role:${currentUser.cargo}`);
+
   // Evento para registrar conexión de un trabajador
-  socket.on("registrarTrabajador", async ({ token, ubicacion }) => {
+  socket.on("registrarTrabajador", async ({ ubicacion }) => {
     try {
-      const decoded = jwt.verify(token, key); // Decodificar el token
-      const rut = decoded.rut; // Extraer el RUT del token
-      if (!rut) {
-        console.error("❌ No se pudo extraer el RUT del token.");
+      const rut = currentUser.rut;
+      if (!rut || !isValidLocation(ubicacion)) {
         return;
       }
-      // Validar formato RUT (solo dígitos, puntos, guión y K) para prevenir inyección
       const safeRut = String(rut).trim();
-      if (!/^[0-9Kk.\-]{5,12}$/.test(safeRut)) {
-        console.error(`❌ RUT con formato inválido detectado: ${safeRut}`);
-        return;
-      }
-      // Buscar el nombre del trabajador en MongoDB
-      const trabajador = await trabajador_MongooseModel.findOne({ Rut: safeRut }).select('Nombre');
+      const trabajador = await trabajador_MongooseModel.findOne({ Rut: safeRut }).select('Nombre cargo');
 
       if (!trabajador) {
-        console.error(`❌ No se encontró el trabajador con RUT: ${safeRut}`);
         return;
       }
 
@@ -182,48 +239,46 @@ io.on('connection', (socket) => {
 
       // actualizarUV();
       socket.join(safeRut); // nosonar - false positive for path.join
-      console.log(`✅ Trabajador registrado: ${trabajador.Nombre} (${rut})`);
 
-      // Emitir la actualización a todos los clientes conectados
-      io.emit("actualizarUbicacion", {
+      io.to('role:administracion').to('role:supervisor').emit("actualizarUbicacion", {
         id_trabajador: rut,
         nombre: trabajador.Nombre,
         ubicacion,
       });
 
     } catch (error) {
-      console.error("❌ Error al decodificar el token:", error.message);
+      return;
     }
   });
   socket.on("actualizarUbicacion",
-    _.throttle(({ token, ubicacion }) => {
+    _.throttle(({ ubicacion }) => {
       try {
-        console.log(`🔄 Actualizando ubicación para ${usuariosConectados[socket.id]?.nombre || 'desconocido'})`);
-        const decoded = jwt.verify(token, key);
-        const rut = decoded.rut;
-        if (usuariosConectados[socket.id]) {
+        const rut = currentUser.rut;
+        if (usuariosConectados[socket.id] && isValidLocation(ubicacion)) {
           usuariosConectados[socket.id].ubicacion = ubicacion;
-
-          console.log(`📍 Ubicación actualizada para ${usuariosConectados[socket.id].nombre} (${rut})`);
-
-          // Emitimos la actualización a TODOS los clientes
-          io.emit("actualizarUbicacion", {
+          io.to('role:administracion').to('role:supervisor').emit("actualizarUbicacion", {
             id_trabajador: rut,
             nombre: usuariosConectados[socket.id].nombre,
             ubicacion,
           });
         }
       } catch (error) {
-        console.error("❌ Error al decodificar el token en actualización de ubicación:", error.message);
+        return;
       }
     }, 5000)
   );
   socket.on('estadoBot', () => {
+    if (!isPrivilegedRole(currentUser.cargo)) {
+      return;
+    }
     obtenerEstadoBot((estado) => {
-      io.emit('estadoActualizado', estado);
+      io.to('role:administracion').to('role:supervisor').emit('estadoActualizado', estado);
     });
   });
   socket.on('actualizarEstadoBot', (estado) => {
+    if (!isPrivilegedRole(currentUser.cargo)) {
+      return;
+    }
     if (estado) {
       execFile('python3', ['../Asistente/checker.py', '--start'], (error, stdout, stderr) => {
         if (error) {
@@ -233,7 +288,7 @@ io.on('connection', (socket) => {
         const estado = stdout.trim() === 'True';
       });
       setTimeout(() => {
-        io.emit('estadoActualizado', estado);
+        io.to('role:administracion').to('role:supervisor').emit('estadoActualizado', estado);
       }, 500);
     }
     else {
@@ -243,23 +298,25 @@ io.on('connection', (socket) => {
           return;
         }
         const estado = stdout.trim() === 'True';
-        io.emit('estadoActualizado', estado);
+        io.to('role:administracion').to('role:supervisor').emit('estadoActualizado', estado);
       });
     }
   });
   socket.on('actualizarDireccion', async (data) => {
+    if (!isPrivilegedRole(currentUser.cargo)) {
+      return;
+    }
     const { id, lat, lng } = data;
     try {
       try {
         const direccionexistente = await direccion_MongooseModel.findById(id);
         if (!direccionexistente) {
-          res.status(404).send('Dirección no encontrada');
           return;
         }
         direccionexistente.LAT = lat;
         direccionexistente.LNG = lng;
         await direccionexistente.save();
-        io.emit('direccionActualizada', {
+        io.to('role:administracion').to('role:supervisor').emit('direccionActualizada', {
           id,
           lat,
           lng,
@@ -270,26 +327,31 @@ io.on('connection', (socket) => {
           { id, lat, lng }
         );
       } catch (error) {
-        console.error('Error al modificar coordenadas:', error);
+        return;
       }
     } catch (error) {
-      console.error('Error al actualizar la dirección:', error);
+      return;
     }
   });
   socket.on('nuevaAte', (data) => {
-    io.emit('actualizarAte', data);
+    if (!isPrivilegedRole(currentUser.cargo)) {
+      return;
+    }
+    io.to('role:administracion').to('role:supervisor').emit('actualizarAte', data);
   });
   socket.on('nuevaNovedad', (data) => {
-    io.emit('actualizarNovedad', data);
+    if (!isPrivilegedRole(currentUser.cargo)) {
+      return;
+    }
+    io.to('role:administracion').to('role:supervisor').emit('actualizarNovedad', data);
   });
   socket.on('updateWorker', () =>
-    io.emit('updateWorker')
+    io.to('role:administracion').to('role:supervisor').emit('updateWorker')
   );
   socket.on("disconnect", async () => {
     const usuario = usuariosConectados[socket.id];
 
     if (usuario) {
-      console.log(`🚪 Trabajador desconectado: ${usuario.nombre} (${usuario.id_trabajador})`);
       try {
         await trabajador_MongooseModel.findOneAndUpdate(
           { Rut: String(usuario.id_trabajador) },
@@ -301,11 +363,10 @@ io.on('connection', (socket) => {
           }
         );
 
-        console.log(`💾 Última ubicación guardada para: ${usuario.nombre} (${usuario.id_trabajador})`);
       } catch (error) {
-        console.error(`❌ Error al guardar la última ubicación: ${error.message}`);
+        return;
       }
-      io.emit('trabajadorDesconectado', usuariosConectados[socket.id]);
+      io.to('role:administracion').to('role:supervisor').emit('trabajadorDesconectado', usuariosConectados[socket.id]);
       delete usuariosConectados[socket.id];
     }
   });

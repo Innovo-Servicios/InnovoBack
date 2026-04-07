@@ -81,6 +81,26 @@ const resolveSafeDocumentPath = (documentPath) => {
     return resolvedPath;
 };
 
+const buildDocumentDownloadUrl = (documentId, documentPath) => {
+    const safeFileName = path.basename(String(documentPath || 'documento'));
+    return `/documento/archivo/${documentId}/${encodeURIComponent(safeFileName)}`;
+};
+
+const sanitizeDocument = (documento) => {
+    if (!documento) {
+        return documento;
+    }
+
+    const plainDocument = typeof documento.toObject === 'function'
+        ? documento.toObject()
+        : { ...documento };
+
+    return {
+        ...plainDocument,
+        url: buildDocumentDownloadUrl(plainDocument._id, plainDocument.url),
+    };
+};
+
 const crearDocumento = async (req, res) => {
     const { token, tipo, objetivo } = req.body;
     // console.log(req.body);
@@ -221,7 +241,7 @@ const obtenerDocumentos = async (req, res) => {
         }
 
         const documentos = await documentos_MongooseModel.find(mongoose.sanitizeFilter(query));
-        return res.send(documentos);
+        return res.send(documentos.map((documento) => sanitizeDocument(documento)));
     } catch (error) {
         return res.status(500).send('Error interno del servidor: ' + error.message);
     }
@@ -308,11 +328,50 @@ const listarDocumentos = async (req, res) => {
             select:'value'
         });
 
-        return res.send(datos);
+        return res.send(datos.map((documento) => sanitizeDocument(documento)));
     } catch (error) {
         return res.status(500).send('Error interno del servidor: ' + error.message);
     }
 }
+
+const descargarDocumento = async (req, res) => {
+    const documentId = normalizeObjectId(req.params.id);
+    if (!documentId) {
+        return res.status(400).send('Documento inválido');
+    }
+
+    try {
+        const documento = await documentos_MongooseModel.findById(documentId);
+        if (!documento) {
+            return res.status(404).send('Documento no encontrado');
+        }
+
+        const trabajador = await trabajador_MongooseModel.findOne({
+            documentos: { $in: [new mongoose.Types.ObjectId(documentId)] },
+        });
+
+        if (!trabajador) {
+            return res.status(404).send('Documento no encontrado');
+        }
+
+        const requesterRole = String(req.authUser?.cargo || '').trim().toLowerCase();
+        const requesterRut = String(req.authUser?.Rut || req.auth?.rut || '').trim();
+        const canAccessForeignDocument = ['administracion', 'supervisor'].includes(requesterRole);
+
+        if (!canAccessForeignDocument && requesterRut !== String(trabajador.Rut)) {
+            return res.status(403).send('Permisos insuficientes');
+        }
+
+        const documentPath = resolveSafeDocumentPath(documento.url);
+        if (!documentPath || !fs.existsSync(documentPath)) {
+            return res.status(404).send('Documento no encontrado');
+        }
+
+        return res.download(documentPath, path.basename(documentPath));
+    } catch (error) {
+        return res.status(500).send('Error interno del servidor');
+    }
+};
 
 const deleteDocumento= async(req,res)=>{
     const {token, id, rut}=req.body
@@ -360,4 +419,4 @@ const deleteDocumento= async(req,res)=>{
     }
 }
 
-module.exports = { crearDocumento, obtenerDocumentos, eliminarDocumentos,listarDocumentos,deleteDocumento };
+module.exports = { crearDocumento, obtenerDocumentos, eliminarDocumentos,listarDocumentos,deleteDocumento, descargarDocumento };

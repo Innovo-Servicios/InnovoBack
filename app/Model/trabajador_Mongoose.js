@@ -22,6 +22,14 @@ const trabajador_Mongoose = new mongoose.Schema({
     },
     "ID": { type: String, required: false },
     "tokenPush": { type: String, required: false },
+    "sessionVersion": { type: Number, required: true, default: 0 },
+    "refreshTokens": [{
+        "tokenHash": { type: String, required: true },
+        "deviceId": { type: String, required: true },
+        "expiresAt": { type: Date, required: true },
+        "createdAt": { type: Date, required: true, default: Date.now },
+        "lastUsedAt": { type: Date, required: false },
+    }],
     "lastUbication": {
         "lat": { type: String, required: false },
         "lng": { type: String, required: false },

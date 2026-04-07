@@ -16,14 +16,39 @@ const { documentos_MongooseModel } = require('../Model/documentos_Mongoose.js');
 const moment = require('moment-timezone');
 const Dayjs = require('dayjs');
 const admin = require('firebase-admin');
-const serviceAccount = require('../../serviceAccountKey.json');
+// const serviceAccount = require('../../serviceAccountKey.json');
 const fetch = require('node-fetch');
 const path = require('path');
 const sharp = require('sharp');
 const fs = require('fs');
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-});
+// admin.initializeApp({
+//     credential: admin.credential.cert(serviceAccount),
+// });
+
+const buildNotificationDownloadUrl = (notificationId, notificationPath) => {
+    const safeFileName = path.basename(String(notificationPath || 'adjunto'));
+    return `/notificaciones/archivo/${notificationId}/${encodeURIComponent(safeFileName)}`;
+};
+
+const sanitizeNotificationForClient = (notificacion) => {
+    if (!notificacion) {
+        return notificacion;
+    }
+
+    const plainNotification = typeof notificacion.toObject === 'function'
+        ? notificacion.toObject()
+        : { ...notificacion };
+
+    if (plainNotification.url) {
+        plainNotification.url = buildNotificationDownloadUrl(
+            plainNotification._id || plainNotification.id,
+            plainNotification.url
+        );
+    }
+
+    return plainNotification;
+};
+
 const obtenerNotificaciones = async (req, res) => {
     const { rut, token } = req.body;
     const tokenValido = await Token.validartoken(token);
@@ -38,7 +63,7 @@ const obtenerNotificaciones = async (req, res) => {
             const notificaciones = await notificaciones_MongooseModel.find({
                 _id: trabajador.notificaciones,
             });
-            res.send(notificaciones);
+            res.send(notificaciones.map((notificacion) => sanitizeNotificationForClient(notificacion)));
         } catch (error) {
             res.status(500).send(
                 'Error interno del servidor: ' + error.message
@@ -97,7 +122,9 @@ const obtenerNotificacionesDelUser = async (req, res) => {
         mensaje: notificacion.mensaje,
         contenido: notificacion.contenido,
         fecha: notificacion.fecha,
-        url: notificacion.url,
+        url: notificacion.url
+          ? buildNotificationDownloadUrl(notificacion._id, notificacion.url)
+          : null,
         estado: vistasSet.has(notificacion._id.toString())
       }));
   
@@ -160,14 +187,17 @@ const crearNotificacion = async (req, res) => {
             // Emitir el evento de nueva notificación a los clientes
             // console.log('Emitiendo a');
             if (objetivo[0] === 'all') {
-                // Opción: emitir a todos
-                req.io.emit('nuevaNotificacion', nuevaNotificacion);
+                for (const t of trabajadores) {
+                    req.io
+                        .to(`worker:${t.Rut}`)
+                        .emit('nuevaNotificacion', sanitizeNotificationForClient(nuevaNotificacion));
+                }
             } else {
                 // Emitir para cada Rut que esté conectado en Socket
                 for (const t of trabajadores) {
                     req.io
-                        .to(t.Rut)
-                        .emit('nuevaNotificacion', nuevaNotificacion);
+                        .to(`worker:${t.Rut}`)
+                        .emit('nuevaNotificacion', sanitizeNotificationForClient(nuevaNotificacion));
                     // console.log('Emitiendo a', t.Rut);
                 }
             }
@@ -286,15 +316,18 @@ const crearNotificacionDocumento = async (req, res) => {
             // Emitir el evento de nueva notificación a los clientes
 
             // Emitir SOLO a los usuarios correspondientes
-            if (objetivo[0] === 'all') {
-                // Opción: emitir a todos
-                req.io.emit('nuevaNotificacion', nuevaNotificacion);
+            if (objetivoArray[0] === 'all') {
+                for (const t of trabajadores) {
+                    req.io
+                        .to(`worker:${t.Rut}`)
+                        .emit('nuevaNotificacion', sanitizeNotificationForClient(nuevaNotificacion));
+                }
             } else {
                 // Emitir para cada Rut que esté conectado en Socket
                 for (const t of trabajadores) {
                     req.io
-                        .to(t.Rut)
-                        .emit('nuevaNotificacion', nuevaNotificacion);
+                        .to(`worker:${t.Rut}`)
+                        .emit('nuevaNotificacion', sanitizeNotificationForClient(nuevaNotificacion));
                 }
             }
 
@@ -303,7 +336,6 @@ const crearNotificacionDocumento = async (req, res) => {
             res.status(500).send(
                 'Error interno del servidor: ' + error.message
             );
-            console.log(error);
         }
     } else {
         res.status(401).send('Token inválido');
@@ -456,7 +488,6 @@ const detallesNotificacion = async (req, res) => {
     }
 };
 const pushNotification = async ({ userId, titulo, mensaje, data }) => {
-    console.log('Enviando notificación a', userId);
     try {
         // Buscar el tokenPush del usuario en la base de datos
         const usuario = await trabajador_MongooseModel.findById(
@@ -538,7 +569,10 @@ const pushNotificationOLD = async (req, res) => {
         const result = await response.json();
 
         if (response.ok) {
-            req.io.emit('notificacionPush', mensajeNotificacion); // Enviar a todos los clientes
+            req.io.to('role:administracion').to('role:supervisor').emit('notificacionPush', {
+                title: titulo,
+                body: mensaje,
+            });
             res.status(200).send("Notificación enviada con éxito");
         } else {
             // console.error("Error desde Expo:", result);
@@ -547,6 +581,48 @@ const pushNotificationOLD = async (req, res) => {
     } catch (error) {
         // console.error("Error al enviar notificación:", error.message);
         res.status(500).send("Error interno del servidor");
+    }
+};
+
+const descargarNotificacionDocumento = async (req, res) => {
+    const notificationId = String(req.params.id || '').trim();
+    if (!mongoose.isValidObjectId(notificationId)) {
+        return res.status(400).send('Notificación inválida');
+    }
+
+    try {
+        const notificacion = await notificaciones_MongooseModel.findById(notificationId);
+        if (!notificacion || !notificacion.url) {
+            return res.status(404).send('Documento no encontrado');
+        }
+
+        const requesterRole = String(req.authUser?.cargo || '').trim().toLowerCase();
+        const requesterRut = String(req.authUser?.Rut || req.auth?.rut || '').trim();
+        const canAccessAllNotifications = ['administracion', 'supervisor'].includes(requesterRole);
+
+        if (!canAccessAllNotifications) {
+            const trabajador = await trabajador_MongooseModel.findOne({ Rut: { $eq: requesterRut } });
+            const workerId = trabajador?._id?.toString();
+            const assignedWorkers = (notificacion.trabajadores || []).map((id) => id.toString());
+            if (!workerId || !assignedWorkers.includes(workerId)) {
+                return res.status(403).send('Permisos insuficientes');
+            }
+        }
+
+        const safeFileName = path.basename(String(notificacion.url));
+        const uploadsBasePath = path.join(__dirname, '../../uploads');
+        const uploadPath = path.join(uploadsBasePath, safeFileName);
+        if (!uploadPath.startsWith(`${uploadsBasePath}${path.sep}`)) {
+            return res.status(404).send('Documento no encontrado');
+        }
+
+        if (!fs.existsSync(uploadPath)) {
+            return res.status(404).send('Documento no encontrado');
+        }
+
+        return res.download(uploadPath, safeFileName);
+    } catch (error) {
+        return res.status(500).send('Error interno del servidor');
     }
 };
 
@@ -561,4 +637,5 @@ module.exports = {
     pushNotificationOLD,
     crearNotificacionDocumento,
     obtenerNotificacionesDelUser,
+    descargarNotificacionDocumento,
 };

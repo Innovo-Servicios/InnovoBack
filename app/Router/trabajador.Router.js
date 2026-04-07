@@ -1,5 +1,7 @@
 const router = require('express').Router();
 const multer = require('multer')  
+const { requireAuth, requireRole } = require('../Middleware/auth.middleware.js');
+const { authLimiter, uploadLimiter } = require('../Middleware/rateLimit.middleware.js');
 
 const {obtenerRegionChile,creartrabajador, modificardatostrabajador, eliminartrabajador, login,listarTrabajadores,obtenerTrabajador, updatePushToken, listarTrabajadoresConectados,datosTrabajador, datosApp,fotoTrabajador} = require('../Controller/trabajador.Controller.js');
 
@@ -10,16 +12,16 @@ router.get('/',(req, res)=>{
     res.send('Ruta de trabajador');
 });
 
-router.post('/creartrabajador', creartrabajador)
-router.put('/modificardatostrabajador', modificardatostrabajador)
-router.delete('/eliminartrabajador', eliminartrabajador)
-router.post('/login', login)
-router.post('/listarTrabajadores',listarTrabajadores)
-router.post('/obtenerTrabajador',obtenerTrabajador)
-router.post('/updatePushToken',updatePushToken)
-router.get('/listarTrabajadoresConectados',listarTrabajadoresConectados)
-router.post('/datosTrabajador',datosTrabajador)
-router.post('/datosApp',datosApp)
-router.post('/fotoTrabajador',upload.single('file'),fotoTrabajador)
-router.post('/obtenerRegionChile',obtenerRegionChile)
+router.post('/creartrabajador', requireAuth, requireRole('administracion'), creartrabajador)
+router.put('/modificardatostrabajador', requireAuth, requireRole('administracion'), modificardatostrabajador)
+router.delete('/eliminartrabajador', requireAuth, requireRole('administracion'), eliminartrabajador)
+router.post('/login', authLimiter, login)
+router.post('/listarTrabajadores', requireAuth, requireRole('administracion', 'supervisor'), listarTrabajadores)
+router.post('/obtenerTrabajador', requireAuth, obtenerTrabajador)
+router.post('/updatePushToken', requireAuth, updatePushToken)
+router.get('/listarTrabajadoresConectados', requireAuth, requireRole('administracion', 'supervisor'), listarTrabajadoresConectados)
+router.post('/datosTrabajador', requireAuth, datosTrabajador)
+router.post('/datosApp', requireAuth, datosApp)
+router.post('/fotoTrabajador', requireAuth, uploadLimiter, upload.single('file'), fotoTrabajador)
+router.post('/obtenerRegionChile', requireAuth, obtenerRegionChile)
 module.exports = router;

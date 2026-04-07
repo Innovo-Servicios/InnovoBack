@@ -19,9 +19,10 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+  },
   fileFilter: (req, file, cb) => {
-    console.log('Archivo recibido:', file);
-
     // Tipos permitidos
     const excelTypes = /xlsx|xls/; // Archivos Excel
     const imageTypes = /jpeg|jpg|png/; // Imágenes
@@ -46,9 +47,10 @@ const upload = multer({
 const memoryStorage = multer.memoryStorage();
 const uploadMemory = multer({
   storage: memoryStorage, // Almacena archivos en memoria
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+  },
   fileFilter: (req, file, cb) => {
-    console.log('Archivo recibido en memoria:', file);
-
     const formatosPermitidos = /jpeg|jpg|png|pdf|msword|docx|xlsx|xls/; // Tipos permitidos
     const extName = path.extname(file.originalname).toLowerCase();
     if (formatosPermitidos.test(extName)) {
