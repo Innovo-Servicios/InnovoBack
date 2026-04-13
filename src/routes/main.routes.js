@@ -1,0 +1,49 @@
+const router = require('express').Router();
+const clienteRouter = require('./cliente.routes.js');
+const direccionRouter = require('./direccion.routes.js');
+const lecturaRouter = require('./lectura.routes.js');
+const medidorRouter = require('./medidor.routes.js');
+const rutaRouter = require('./ruta.routes.js');
+const sectorRouter = require('./sector.routes.js');
+const trabajadorRouter = require('./trabajador.routes.js');
+const asignacion = require('./asignacion.routes.js')
+const token =require('./token.routes.js');
+const notificaciones = require('./notificaciones.routes.js');
+const ate= require('./ate.routes.js');
+const novedad = require('./novedad.routes.js');
+const tipoNovedad = require('./tipoNovedad.routes.js');
+const notivista= require('./notificacion_vista.routes.js')
+const uvComentario = require('./uvComentario.routes.js');
+const direccionComentario = require('./ComentarioDireccion.routes.js');
+const tipoNotificacion = require('./tipoNotificacion.routes.js');
+const documentoRouter = require('./documento.routes.js');
+const tipoDocumentoRouter = require('./tipoDocumento.routes.js');
+const rol= require('./rol.routes.js');
+const permiso= require('./permiso.routes.js');
+const excelRouter = require('./excel.routes.js');
+const { requireAuth } = require('../middlewares/auth.middleware.js');
+
+module.exports = app => {
+    app.use('/cliente', requireAuth, clienteRouter);
+    app.use('/direccion', requireAuth, direccionRouter);
+    app.use('/lectura', requireAuth, lecturaRouter);
+    app.use('/medidor', requireAuth, medidorRouter);
+    app.use('/ruta', requireAuth, rutaRouter);
+    app.use('/sector', requireAuth, sectorRouter);
+    app.use('/trabajador', trabajadorRouter);
+    app.use('/token',token);
+    app.use('/asignacion', requireAuth, asignacion);
+    app.use('/notificaciones', requireAuth, notificaciones);
+    app.use('/middleware', requireAuth, ate);
+    app.use('/novedad', requireAuth, novedad);
+    app.use('/tipoNovedad', requireAuth, tipoNovedad);
+    app.use('/notificacion_vista', requireAuth, notivista);
+    app.use('/uvComentario', requireAuth, uvComentario); 
+    app.use('/comentarioDireccion', requireAuth, direccionComentario);
+    app.use('/tipoNotificacion', requireAuth, tipoNotificacion);
+    app.use('/documento', requireAuth, documentoRouter);
+    app.use('/tipoDocumento', requireAuth, tipoDocumentoRouter);
+    app.use('/rol', requireAuth, rol);
+    app.use('/permiso', requireAuth, permiso);
+    app.use('/excel', requireAuth, excelRouter);
+} 

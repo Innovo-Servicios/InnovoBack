@@ -4,15 +4,15 @@ const http = require('http'); // Agregado
 const { Server } = require('socket.io'); // Agregado
 require('dotenv').config();
 const cookieParser = require('cookie-parser');
-const db = require('./app/Model/server.js');
+const db = require('./src/config/db.js');
 const cron = require('node-cron');
-const { trabajador_MongooseModel } = require('./app/Model/trabajador_Mongoose.js');
+const { trabajador_MongooseModel } = require('./src/models/trabajador.model.js');
 const app = express();
 const port = `${process.env.PORT}`;
-const { direccion_MongooseModel } = require('./app/Model/direccion_Mongoose.js');
-const { ate_MongooseModel } = require('./app/Model/ATE_Mongoose.js');
-const { Region } = require('./app/Model/region_Mongoose.js');
-const { notificacion_MongooseModel } = require('./app/Model/notificacion_Mongoose.js');
+const { direccion_MongooseModel } = require('./src/models/direccion.model.js');
+const { ate_MongooseModel } = require('./src/models/ATE.model.js');
+const { Region } = require('./src/models/region.model.js');
+const { notificacion_MongooseModel } = require('./src/models/notificacion.model.js');
 // Crear servidor HTTP
 const server = http.createServer(app);
 const { execFile } = require('child_process');
@@ -21,10 +21,10 @@ const _ = require('lodash');
 const path = require('path');
 const axios = require('axios');
 const helmet = require('helmet');
-const {pushNotification,crearNotificacion} = require('./app/Controller/notificaciones.Controller.js');
+const {pushNotification,crearNotificacion} = require('./src/controllers/notificaciones.controller.js');
 const moment = require('moment-timezone');
 const mongoSanitize = require('express-mongo-sanitize');
-const { validartoken } = require('./app/Controller/token.Controller.js');
+const { validartoken } = require('./src/controllers/token.controller.js');
 
 const parseAllowedOrigins = (rawOrigins) =>
   String(rawOrigins || '')
@@ -127,7 +127,7 @@ app.use(mongoSanitize());
 const authSource = process.env.MONGO_AUTH_SOURCE
   ? `?authSource=${encodeURIComponent(process.env.MONGO_AUTH_SOURCE)}`
   : '';
-const uri = `mongodb://${process.env.MONGO_USER}:${encodeURIComponent(process.env.MONGO_PASSWORD)}@${process.env.MONGO_HOST}/${process.env.MONGO_DATABASE}${authSource}`;
+const uri = `mongodb://${process.env.MONGO_USER}:${encodeURIComponent(process.env.MONGO_PASSWORD)}@${process.env.MONGO_HOST}:${process.env.MONGO_PORT}/${process.env.MONGO_DATABASE}${authSource}`;
 global.usuariosConectados = global.usuariosConectados || {};
 let usuariosConectados = global.usuariosConectados; // Lista local en memoria compartida
 
@@ -152,11 +152,12 @@ app.use((req, res, next) => {
   req.io = io;
   next();
 });
-app.use('/IMG_ATES', express.static(path.join(__dirname, './IMG_ATES')));
-app.use('/IMG_NOVEDADES', express.static(path.join(__dirname, './IMG_NOVEDADES')));
-app.use('/IMG_PERFILES', express.static(path.join(__dirname, './IMG_PERFILES')));
+app.use('/IMG_ATES', express.static(path.join(__dirname, './public/images/ates')));
+app.use('/IMG_NOVEDADES', express.static(path.join(__dirname, './public/images/novedades')));
+app.use('/IMG_PERFILES', express.static(path.join(__dirname, './public/images/perfiles')));
+app.use('/IMG_VERIFICACIONES', express.static(path.join(__dirname, './public/images/verificaciones')));
 // Cargar las rutas
-require('./app/Router/main.router')(app);
+require('./src/routes/main.routes.js')(app);
 
 const obtenerEstadoBot = (callback) => {
   execFile('python3', ['../Asistente/checker.py', '--status'], (error, stdout, stderr) => {
