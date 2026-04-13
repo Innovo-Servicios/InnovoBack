@@ -1,6 +1,6 @@
 const cors = require('cors');
 const express = require('express');
-const http = require('http'); // Agregado
+const http = require('node:http');
 const { Server } = require('socket.io'); // Agregado
 require('dotenv').config();
 const cookieParser = require('cookie-parser');
@@ -15,10 +15,9 @@ const { Region } = require('./src/models/region.model.js');
 const { notificacion_MongooseModel } = require('./src/models/notificacion.model.js');
 // Crear servidor HTTP
 const server = http.createServer(app);
-const { execFile } = require('child_process');
-const { time } = require('console');
+const { execFile } = require('node:child_process');
 const _ = require('lodash');
-const path = require('path');
+const path = require('node:path');
 const axios = require('axios');
 const helmet = require('helmet');
 const {pushNotification,crearNotificacion} = require('./src/controllers/notificaciones.controller.js');
@@ -56,6 +55,11 @@ const isValidLocation = (location) =>
   Number.isFinite(Number(location.lat)) &&
   Number.isFinite(Number(location.lng));
 
+const logHandledError = (context, error) => {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  console.error(`${context}: ${errorMessage}`);
+};
+
 
 const ateatrasada = async () => {
   const trabajadores = await trabajador_MongooseModel.find();
@@ -85,9 +89,6 @@ const ateatrasada = async () => {
     }
   }
 }
-//cron.schedule('*/20 * * * * *', ateatrasada);
-
-
 const actualizarUV = async () => {
   const regiones = await axios.post("https://indiceuv.cl/ws/wsIndiceUVREST.php?id_region=0");
   const regionesData = regiones.data;
@@ -128,8 +129,8 @@ const authSource = process.env.MONGO_AUTH_SOURCE
   ? `?authSource=${encodeURIComponent(process.env.MONGO_AUTH_SOURCE)}`
   : '';
 const uri = `mongodb://${process.env.MONGO_USER}:${encodeURIComponent(process.env.MONGO_PASSWORD)}@${process.env.MONGO_HOST}:${process.env.MONGO_PORT}/${process.env.MONGO_DATABASE}${authSource}`;
-global.usuariosConectados = global.usuariosConectados || {};
-let usuariosConectados = global.usuariosConectados; // Lista local en memoria compartida
+globalThis.usuariosConectados = globalThis.usuariosConectados || {};
+const usuariosConectados = globalThis.usuariosConectados; // Lista local en memoria compartida
 
 db.mongoose
   .connect(uri)
@@ -207,6 +208,7 @@ io.use(async (socket, next) => {
 
     return next();
   } catch (error) {
+    logHandledError('Error al autenticar el socket', error);
     return next(new Error('No autorizado'));
   }
 });
@@ -238,7 +240,6 @@ io.on('connection', (socket) => {
         ubicacion,
       };
 
-      // actualizarUV();
       socket.join(safeRut); // nosonar - false positive for path.join
 
       io.to('role:administracion').to('role:supervisor').emit("actualizarUbicacion", {
@@ -248,7 +249,7 @@ io.on('connection', (socket) => {
       });
 
     } catch (error) {
-      return;
+      logHandledError(`Error al registrar trabajador ${currentUser.rut}`, error);
     }
   });
   socket.on("actualizarUbicacion",
@@ -264,7 +265,7 @@ io.on('connection', (socket) => {
           });
         }
       } catch (error) {
-        return;
+        logHandledError(`Error al actualizar ubicación del trabajador ${currentUser.rut}`, error);
       }
     }, 5000)
   );
@@ -281,12 +282,10 @@ io.on('connection', (socket) => {
       return;
     }
     if (estado) {
-      execFile('python3', ['../Asistente/checker.py', '--start'], (error, stdout, stderr) => {
+      execFile('python3', ['../Asistente/checker.py', '--start'], (error) => {
         if (error) {
           console.error(`Error al ejecutar el script: ${error.message}`);
-          return;
         }
-        const estado = stdout.trim() === 'True';
       });
       setTimeout(() => {
         io.to('role:administracion').to('role:supervisor').emit('estadoActualizado', estado);
@@ -309,29 +308,25 @@ io.on('connection', (socket) => {
     }
     const { id, lat, lng } = data;
     try {
-      try {
-        const direccionexistente = await direccion_MongooseModel.findById(id);
-        if (!direccionexistente) {
-          return;
-        }
-        direccionexistente.LAT = lat;
-        direccionexistente.LNG = lng;
-        await direccionexistente.save();
-        io.to('role:administracion').to('role:supervisor').emit('direccionActualizada', {
-          id,
-          lat,
-          lng,
-        });
-        enviarNotificacion(
-          'Dirección Actualizada',
-          `La dirección con ID ${id} fue actualizada a las nuevas coordenadas.`,
-          { id, lat, lng }
-        );
-      } catch (error) {
+      const direccionexistente = await direccion_MongooseModel.findById(id);
+      if (!direccionexistente) {
         return;
       }
+      direccionexistente.LAT = lat;
+      direccionexistente.LNG = lng;
+      await direccionexistente.save();
+      io.to('role:administracion').to('role:supervisor').emit('direccionActualizada', {
+        id,
+        lat,
+        lng,
+      });
+      enviarNotificacion(
+        'Dirección Actualizada',
+        `La dirección con ID ${id} fue actualizada a las nuevas coordenadas.`,
+        { id, lat, lng }
+      );
     } catch (error) {
-      return;
+      logHandledError(`Error al actualizar la dirección ${id}`, error);
     }
   });
   socket.on('nuevaAte', (data) => {
@@ -365,7 +360,7 @@ io.on('connection', (socket) => {
         );
 
       } catch (error) {
-        return;
+        logHandledError(`Error al desconectar trabajador ${usuario.id_trabajador}`, error);
       }
       io.to('role:administracion').to('role:supervisor').emit('trabajadorDesconectado', usuariosConectados[socket.id]);
       delete usuariosConectados[socket.id];

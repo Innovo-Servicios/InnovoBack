@@ -15,15 +15,27 @@ const {
 const { documentos_MongooseModel } = require('../models/documentos.model.js');
 const moment = require('moment-timezone');
 const Dayjs = require('dayjs');
-const admin = require('firebase-admin');
-// const serviceAccount = require('../../serviceAccountKey.json');
 const fetch = require('node-fetch');
-const path = require('path');
+const path = require('node:path');
 const sharp = require('sharp');
-const fs = require('fs');
-// admin.initializeApp({
-//     credential: admin.credential.cert(serviceAccount),
-// });
+const fs = require('node:fs');
+
+const NOTIFICATION_ALLOWED_FORMATS = new Set([
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'image/jpg',
+]);
+const NOTIFICATION_IMAGE_FORMATS = new Set([
+    'image/jpeg',
+    'image/png',
+    'image/jpg',
+]);
+
+const logHandledError = (context, error) => {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`${context}: ${errorMessage}`);
+};
 
 const buildNotificationDownloadUrl = (notificationId, notificationPath) => {
     const safeFileName = path.basename(String(notificationPath || 'adjunto'));
@@ -47,6 +59,162 @@ const sanitizeNotificationForClient = (notificacion) => {
     }
 
     return plainNotification;
+};
+
+const normalizeNotificationTargets = (objetivo) => {
+    if (Array.isArray(objetivo)) {
+        return objetivo;
+    }
+
+    if (typeof objetivo !== 'string') {
+        return [];
+    }
+
+    try {
+        const parsedTargets = JSON.parse(objetivo);
+        return Array.isArray(parsedTargets) ? parsedTargets : [];
+    } catch (error) {
+        return [];
+    }
+};
+
+const getTargetWorkers = async (objetivoArray) => {
+    if (objetivoArray[0] === 'all') {
+        return trabajador_MongooseModel.find();
+    }
+
+    return trabajador_MongooseModel.find({
+        Rut: { $in: objetivoArray },
+    });
+};
+
+const buildPushNotificationData = ({
+    contenido,
+    notificationId,
+    tipo,
+    fecha,
+    url,
+}) => ({
+    contenidos: contenido,
+    idNotificacion: notificationId,
+    tipo,
+    fecha,
+    url: url || null,
+});
+
+const createNotificationRecord = ({
+    trabajadores,
+    tipoId,
+    titulo,
+    mensaje,
+    contenido,
+    url,
+    fecha,
+}) => new notificaciones_MongooseModel({
+    trabajadores: trabajadores.map((trabajador) => trabajador._id),
+    tipo: tipoId,
+    titulo,
+    mensaje,
+    contenido,
+    url,
+    fecha,
+});
+
+const assignNotificationToWorkers = async ({
+    trabajadores,
+    nuevaNotificacion,
+    titulo,
+    mensaje,
+    data,
+    documentoId,
+}) => {
+    for (const trabajador of trabajadores) {
+        trabajador.notificaciones.push(nuevaNotificacion.id);
+        if (documentoId) {
+            trabajador.documentos.push(documentoId);
+        }
+
+        await pushNotification({
+            userId: trabajador._id,
+            titulo,
+            mensaje,
+            data,
+        });
+        await trabajador.save();
+    }
+};
+
+const emitNotificationToWorkers = (io, trabajadores, nuevaNotificacion) => {
+    const clientNotification = sanitizeNotificationForClient(nuevaNotificacion);
+    for (const trabajador of trabajadores) {
+        io.to(`worker:${trabajador.Rut}`)
+            .emit('nuevaNotificacion', clientNotification);
+    }
+};
+
+const ensureNotificationUploadPath = () => {
+    const uploadPath = path.join(__dirname, '../../storage/uploads');
+    if (!fs.existsSync(uploadPath)) {
+        fs.mkdirSync(uploadPath, { recursive: true });
+    }
+
+    return uploadPath;
+};
+
+const buildNotificationImageName = (fileName) =>
+    fileName.replaceAll(/\s/g, '').replace(/\.[^/.]+$/, '.jpeg');
+
+const saveNotificationAttachment = async (archivo) => {
+    if (!NOTIFICATION_ALLOWED_FORMATS.has(archivo.mimetype)) {
+        return {
+            error: `Formato de archivo no permitido: ${archivo.mimetype}`,
+        };
+    }
+
+    const uploadPath = ensureNotificationUploadPath();
+    const fileName = path.basename(`file-${Date.now()}-${archivo.originalname}`);
+
+    if (NOTIFICATION_IMAGE_FORMATS.has(archivo.mimetype)) {
+        const finalPath = path.join(
+            uploadPath,
+            buildNotificationImageName(fileName)
+        );
+
+        await sharp(archivo.buffer)
+            .resize(1024, 1024, { fit: 'inside' })
+            .toFormat('jpeg', { quality: 80 })
+            .toFile(finalPath);
+
+        return { finalPath };
+    }
+
+    const finalPath = path.join(uploadPath, fileName);
+    fs.writeFileSync(finalPath, archivo.buffer);
+    return { finalPath };
+};
+
+const sendExpoPushNotification = async ({ tokenPush, titulo, mensaje, data }) => {
+    const mensajeNotificacion = {
+        to: tokenPush,
+        sound: 'default',
+        title: titulo,
+        body: mensaje,
+        data: data || {},
+    };
+
+    const response = await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(mensajeNotificacion),
+    });
+
+    const result = await response.json();
+    return {
+        ok: response.ok,
+        result,
+    };
 };
 
 const obtenerNotificaciones = async (req, res) => {
