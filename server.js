@@ -31,8 +31,14 @@ const parseAllowedOrigins = (rawOrigins) =>
     .map((origin) => origin.trim())
     .filter(Boolean);
 
+const isProduction = process.env.NODE_ENV === 'production';
+const defaultAllowedOrigins = [
+  'https://provider.blocktype.cl',
+  isProduction ? null : 'https://localhost:3000',
+].filter(Boolean).join(',');
+
 const allowedOrigins = parseAllowedOrigins(
-  process.env.ALLOWED_ORIGINS || 'http://localhost:3000,https://provider.blocktype.cl'
+  process.env.ALLOWED_ORIGINS || defaultAllowedOrigins
 );
 
 const corsOptions = {
@@ -59,6 +65,41 @@ const logHandledError = (context, error) => {
   const errorMessage = error instanceof Error ? error.message : String(error);
   console.error(`${context}: ${errorMessage}`);
 };
+
+const checkerScriptPath = process.env.CHECKER_SCRIPT_PATH
+  ? path.resolve(process.env.CHECKER_SCRIPT_PATH)
+  : path.resolve(__dirname, '../Asistente/checker.py');
+const pythonBinaryPath = process.env.PYTHON_BINARY_PATH
+  ? path.resolve(process.env.PYTHON_BINARY_PATH)
+  : '/usr/bin/python3';
+const restrictedChildProcessEnv = {
+  ...process.env,
+  PATH: '/usr/bin:/bin',
+};
+const contentSecurityPolicyDirectives = {
+  'default-src': ["'self'"],
+  'base-uri': ["'self'"],
+  'form-action': ["'self'"],
+  'frame-ancestors': ["'self'"],
+  'img-src': ["'self'", 'data:', 'blob:'],
+  'object-src': ["'none'"],
+  'script-src': ["'self'"],
+  'script-src-attr': ["'none'"],
+  'style-src': ["'self'", 'https:', "'unsafe-inline'"],
+  'connect-src': ["'self'", 'ws:', 'wss:', ...allowedOrigins],
+};
+
+if (isProduction) {
+  contentSecurityPolicyDirectives['upgrade-insecure-requests'] = [];
+}
+
+const execCheckerScript = (args, callback) =>
+  execFile(
+    pythonBinaryPath,
+    [checkerScriptPath, ...args],
+    { env: restrictedChildProcessEnv },
+    callback
+  );
 
 
 const ateatrasada = async () => {
@@ -115,7 +156,9 @@ const io = new Server(server, {
   cors: corsOptions,
 });
 app.use(helmet({
-  contentSecurityPolicy: false,
+  contentSecurityPolicy: {
+    directives: contentSecurityPolicyDirectives,
+  },
   crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
 app.use(cookieParser());
@@ -161,7 +204,7 @@ app.use('/IMG_VERIFICACIONES', express.static(path.join(__dirname, './public/ima
 require('./src/routes/main.routes.js')(app);
 
 const obtenerEstadoBot = (callback) => {
-  execFile('python3', ['../Asistente/checker.py', '--status'], (error, stdout, stderr) => {
+  execCheckerScript(['--status'], (error, stdout, stderr) => {
     if (error) {
       console.error(`Error al ejecutar el script: ${error.message}`);
       callback(false); // Asume estado falso en caso de error
@@ -282,7 +325,7 @@ io.on('connection', (socket) => {
       return;
     }
     if (estado) {
-      execFile('python3', ['../Asistente/checker.py', '--start'], (error) => {
+      execCheckerScript(['--start'], (error) => {
         if (error) {
           console.error(`Error al ejecutar el script: ${error.message}`);
         }
@@ -292,7 +335,7 @@ io.on('connection', (socket) => {
       }, 500);
     }
     else {
-      execFile('python3', ['../Asistente/checker.py', '--stop'], (error, stdout, stderr) => {
+      execCheckerScript(['--stop'], (error, stdout, stderr) => {
         if (error) {
           console.error(`Error al ejecutar el script: ${error.message}`);
           return;
