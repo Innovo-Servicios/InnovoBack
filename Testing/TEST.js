@@ -7,7 +7,7 @@ require('dotenv').config({
 const key = process.env.JWT_SECRET;
 
 // Configuración
-const SERVER_URL = process.env.SOCKET_SERVER || "http://localhost:3001";
+const SERVER_URL = process.env.SOCKET_SERVER || "http://localhost:40000";
 const NUM_CLIENTS = 10; // Número de dispositivos simulados
 const INTERVALO_ENVIO = 2000; // Frecuencia de actualización en ms (2 segundos)
 const SIMULACION_DURACION = 120000; // Duración total en ms (2 minutos)
