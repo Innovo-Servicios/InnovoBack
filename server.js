@@ -32,6 +32,22 @@ const parseAllowedOrigins = (rawOrigins) =>
     .map((origin) => origin.trim())
     .filter(Boolean);
 
+const normalizeOrigin = (origin) => {
+  if (!origin || typeof origin !== 'string') {
+    return null;
+  }
+
+  try {
+    const url = new URL(origin);
+    if ((url.protocol === 'https:' && url.port === '443') || (url.protocol === 'http:' && url.port === '80')) {
+      url.port = '';
+    }
+    return url.origin;
+  } catch (error) {
+    return origin.trim();
+  }
+};
+
 const isProduction = process.env.NODE_ENV === 'production';
 const defaultAllowedOrigins = [
   'https://provider.blocktype.cl',
@@ -42,13 +58,14 @@ const defaultAllowedOrigins = [
 
 const allowedOrigins = parseAllowedOrigins(
   process.env.ALLOWED_ORIGINS || defaultAllowedOrigins
-);
+).map(normalizeOrigin).filter(Boolean);
 
 console.log('CORS Allowed Origins:', allowedOrigins);
 
 const corsOptions = {
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
+    const normalizedOrigin = normalizeOrigin(origin);
+    if (!origin || allowedOrigins.includes(normalizedOrigin)) {
       return callback(null, true);
     }
 
@@ -140,6 +157,7 @@ const ateatrasada = async () => {
 const actualizarUV = async () => {
   const regiones = await axios.post("https://indiceuv.cl/ws/wsIndiceUVREST.php?id_region=0");
   const regionesData = regiones.data;
+  console.log("Regiones:", regionesData);
   const regionesChile = await Region.find();
   for (const region of regionesChile) {
     const regionData = regionesData.data.find((regionData) => regionData.id_region == region.idnumero);

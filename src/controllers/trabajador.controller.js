@@ -165,6 +165,8 @@ const login = async (req, res) => {
     }
 
     const { rut, clave, ID, tokenPush } = parsedLogin.data;
+    console.log("🚀 ~ login ~ rut:", rut)
+    
     try {
         const usuarioExistente = await TrabajadorModel.findOne({
             Rut: { $eq: String(rut) },
@@ -445,15 +447,34 @@ const fotoTrabajador = async (req, res) => {
 }
 
 const obtenerRegionChile = async (req,res) => {
-    const {lat,lng} = req.body;
-    const region = await Region.findOne({
-      "area.latMin": { $lte: lat },
-      "area.latMax": { $gte: lat },
-      "area.lngMin": { $lte: lng },
-      "area.lngMax": { $gte: lng }
-    });
-    // return region ? [region.indiceUV_h, region.indiceUV_m] : null;
-    res.send(region? [region.indiceUV_h, region.indiceUV_m] : null);
+    try {
+        const lat = Number(req.body.lat);
+        const lng = Number(req.body.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+            return res.status(400).json({ message: 'Coordenadas inválidas' });
+        }
+
+        const region = await Region.findOne({
+          "area.latMin": { $lte: lat },
+          "area.latMax": { $gte: lat },
+          "area.lngMin": { $lte: lng },
+          "area.lngMax": { $gte: lng }
+        });
+
+        const fallbackRegion = region || await Region.findOne({ idnumero: 5 });
+        if (!fallbackRegion) {
+            return res.status(404).json({ message: 'No hay datos UV disponibles' });
+        }
+
+        if (!region) {
+            console.warn(`No se encontró región UV para lat=${lat}, lng=${lng}. Usando Valparaíso como fallback.`);
+        }
+
+        return res.json([fallbackRegion.indiceUV_h ?? 0, fallbackRegion.indiceUV_m ?? 0]);
+    } catch (error) {
+        console.error('Error al obtener región UV:', error);
+        return res.status(500).json({ message: 'Error interno al obtener datos UV' });
+    }
 };
   
 
