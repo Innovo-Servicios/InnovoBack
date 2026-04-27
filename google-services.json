@@ -1,13 +1,51 @@
 {
   "project_info": {
-    "project_number": "420340144093",
-    "project_id": "innovo-app-ac1ef",
-    "storage_bucket": "innovo-app-ac1ef.firebasestorage.app"
+    "project_number": "540163151548",
+    "project_id": "project-84862290-df5e-42fd-97b",
+    "storage_bucket": "project-84862290-df5e-42fd-97b.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:420340144093:android:51782ff658532310338834",
+        "mobilesdk_app_id": "1:540163151548:android:c53c0bca3c03a8f0d0e2b9",
+        "android_client_info": {
+          "package_name": "com.innovo.servicios"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBuRMsyeVyaZNwXr6AxujAl1etM2Sjh_7k"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:540163151548:android:9f8e015846c8751cd0e2b9",
+        "android_client_info": {
+          "package_name": "com.innovoapp.innovoapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBuRMsyeVyaZNwXr6AxujAl1etM2Sjh_7k"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:540163151548:android:f0193b7f3843595ad0e2b9",
         "android_client_info": {
           "package_name": "com.lowframes.innovoapp"
         }
@@ -15,7 +53,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyD7VDvtlimx-VKCXjoNHmhrRHyxrlzUfKo"
+          "current_key": "AIzaSyBuRMsyeVyaZNwXr6AxujAl1etM2Sjh_7k"
         }
       ],
       "services": {

@@ -5,3 +5,5 @@ uploads
 google.services.json
 serviceAccountKey.json
 .next
+mongo-data
+scripts/mongo-setup.sh
