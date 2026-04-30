@@ -68,6 +68,7 @@ const creartrabajador = async (req, res) => {
     }
 
     const { rut, nombre, cargo, correo, clave } = parsedWorker.data;
+    console.log(rut,nombre,cargo,correo,clave)
     try {
         const trabajadorExistente = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) }, Nombre: { $eq: String(nombre) } });
         if (trabajadorExistente) {

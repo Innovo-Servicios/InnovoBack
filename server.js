@@ -90,6 +90,58 @@ const logHandledError = (context, error) => {
   console.error(`${context}: ${errorMessage}`);
 };
 
+const redactSensitiveData = (data) => {
+  if (!data || typeof data !== 'object') {
+    return data;
+  }
+
+  if (Array.isArray(data)) {
+    return data.map(redactSensitiveData);
+  }
+
+  return Object.fromEntries(
+    Object.entries(data).map(([key, value]) => {
+      const normalizedKey = String(key).toLowerCase();
+      if (
+        normalizedKey.includes('token') ||
+        normalizedKey.includes('authorization') ||
+        normalizedKey.includes('clave') ||
+        normalizedKey.includes('password')
+      ) {
+        return [key, '[REDACTED]'];
+      }
+
+      return [key, redactSensitiveData(value)];
+    })
+  );
+};
+
+const apiDebugLogger = (req, res, next) => {
+  if (process.env.API_DEBUG !== 'true') {
+    return next();
+  }
+
+  const startedAt = Date.now();
+  console.log('[API ->]', {
+    method: req.method,
+    path: req.originalUrl,
+    ip: req.ip,
+    body: redactSensitiveData(req.body),
+    query: redactSensitiveData(req.query),
+  });
+
+  res.on('finish', () => {
+    console.log('[API <-]', {
+      method: req.method,
+      path: req.originalUrl,
+      status: res.statusCode,
+      durationMs: Date.now() - startedAt,
+    });
+  });
+
+  return next();
+};
+
 const checkerScriptPath = process.env.CHECKER_SCRIPT_PATH
   ? path.resolve(process.env.CHECKER_SCRIPT_PATH)
   : path.resolve(__dirname, '../Asistente/checker.py');
@@ -157,7 +209,6 @@ const ateatrasada = async () => {
 const actualizarUV = async () => {
   const regiones = await axios.post("https://indiceuv.cl/ws/wsIndiceUVREST.php?id_region=0");
   const regionesData = regiones.data;
-  console.log("Regiones:", regionesData);
   const regionesChile = await Region.find();
   for (const region of regionesChile) {
     const regionData = regionesData.data.find((regionData) => regionData.id_region == region.idnumero);
@@ -190,6 +241,7 @@ app.use(cookieParser());
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(apiDebugLogger);
 app.use((req, res, next) => {
   ['body', 'params', 'headers', 'query'].forEach((key) => {
     if (req[key]) {

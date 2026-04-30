@@ -1,7 +1,9 @@
 const rateLimit = require('express-rate-limit');
 
+const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
+
 const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000000,
+    windowMs: FIFTEEN_MINUTES_MS,
     limit: 10,
     standardHeaders: true,
     legacyHeaders: false,
@@ -9,7 +11,7 @@ const authLimiter = rateLimit({
 });
 
 const tokenLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
+    windowMs: FIFTEEN_MINUTES_MS,
     limit: 30,
     standardHeaders: true,
     legacyHeaders: false,
@@ -17,7 +19,7 @@ const tokenLimiter = rateLimit({
 });
 
 const uploadLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
+    windowMs: FIFTEEN_MINUTES_MS,
     limit: 20,
     standardHeaders: true,
     legacyHeaders: false,

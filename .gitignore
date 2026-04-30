@@ -7,3 +7,8 @@ serviceAccountKey.json
 .next
 mongo-data
 scripts/mongo-setup.sh
+service_error.txt
+final_service_status.txt
+final_retry.txt
+err.log
+backend.log

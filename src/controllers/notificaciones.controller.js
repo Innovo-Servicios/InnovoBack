@@ -31,6 +31,9 @@ const NOTIFICATION_IMAGE_FORMATS = new Set([
     'image/png',
     'image/jpg',
 ]);
+const NOTIFICATION_DEFAULT_PAGE_LIMIT = 20;
+const NOTIFICATION_MAX_PAGE_LIMIT = 50;
+const NOTIFICATION_TIMEZONE = 'America/Santiago';
 
 const logHandledError = (context, error) => {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -40,6 +43,15 @@ const logHandledError = (context, error) => {
 const buildNotificationDownloadUrl = (notificationId, notificationPath) => {
     const safeFileName = path.basename(String(notificationPath || 'adjunto'));
     return `/notificaciones/archivo/${notificationId}/${encodeURIComponent(safeFileName)}`;
+};
+
+const formatNotificationDateForClient = (fecha) => {
+    const parsedDate = new Date(fecha);
+    if (Number.isNaN(parsedDate.getTime())) {
+        return fecha;
+    }
+
+    return parsedDate.toISOString();
 };
 
 const sanitizeNotificationForClient = (notificacion) => {
@@ -59,6 +71,134 @@ const sanitizeNotificationForClient = (notificacion) => {
     }
 
     return plainNotification;
+};
+
+const normalizeNotificationPageLimit = (limit) => {
+    const parsedLimit = Number.parseInt(limit, 10);
+    if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
+        return NOTIFICATION_DEFAULT_PAGE_LIMIT;
+    }
+
+    return Math.min(parsedLimit, NOTIFICATION_MAX_PAGE_LIMIT);
+};
+
+const encodeNotificationCursor = (notificacion) => {
+    if (!notificacion?.fecha || !notificacion?._id) {
+        return null;
+    }
+
+    return Buffer.from(JSON.stringify({
+        fecha: new Date(notificacion.fecha).toISOString(),
+        id: notificacion._id.toString(),
+    })).toString('base64url');
+};
+
+const decodeNotificationCursor = (cursor) => {
+    if (!cursor || typeof cursor !== 'string') {
+        return null;
+    }
+
+    try {
+        const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+        if (!decoded.fecha || !decoded.id || !mongoose.Types.ObjectId.isValid(decoded.id)) {
+            return null;
+        }
+
+        const fecha = new Date(decoded.fecha);
+        if (Number.isNaN(fecha.getTime())) {
+            return null;
+        }
+
+        return {
+            fecha,
+            id: new mongoose.Types.ObjectId(decoded.id),
+        };
+    } catch (error) {
+        logHandledError('Cursor de notificaciones inválido', error);
+        return null;
+    }
+};
+
+const buildNotificationCursorQuery = (cursor) => {
+    const decodedCursor = decodeNotificationCursor(cursor);
+    if (!decodedCursor) {
+        return {};
+    }
+
+    return {
+        $or: [
+            { fecha: { $lt: decodedCursor.fecha } },
+            {
+                fecha: decodedCursor.fecha,
+                _id: { $lt: decodedCursor.id },
+            },
+        ],
+    };
+};
+
+const getWorkerNotificationIds = (trabajador) => [
+    ...new Set([
+        ...(trabajador.notificaciones || []).map((id) => id.toString()),
+        ...(trabajador.vistas || []).map((id) => id.toString()),
+    ]),
+];
+
+const getNotificationTypeMap = async (notificaciones) => {
+    const tipoIds = [
+        ...new Set(
+            notificaciones
+                .filter((notificacion) => notificacion.tipo)
+                .map((notificacion) => notificacion.tipo.toString())
+        ),
+    ];
+
+    if (tipoIds.length === 0) {
+        return {};
+    }
+
+    const tipos = await TipoNotificacion.find({
+        _id: { $in: tipoIds },
+    });
+
+    return tipos.reduce((acc, tipo) => {
+        acc[tipo._id.toString()] = tipo.value;
+        return acc;
+    }, {});
+};
+
+const formatNotificationsForApp = async (notificaciones, trabajador) => {
+    const vistasSet = new Set((trabajador.vistas || []).map((id) => id.toString()));
+    const tiposMap = await getNotificationTypeMap(notificaciones);
+
+    return notificaciones.map((notificacion) => ({
+        id: notificacion._id.toString(),
+        tipo: tiposMap[notificacion.tipo.toString()] || 'Desconocido',
+        titulo: notificacion.titulo,
+        mensaje: notificacion.mensaje,
+        contenido: notificacion.contenido,
+        fecha: formatNotificationDateForClient(notificacion.fecha),
+        url: notificacion.url
+            ? buildNotificationDownloadUrl(notificacion._id, notificacion.url)
+            : null,
+        estado: vistasSet.has(notificacion._id.toString()),
+    }));
+};
+
+const formatLiveNotificationForApp = async (notificacion) => {
+    const tiposMap = await getNotificationTypeMap([notificacion]);
+
+    return {
+        id: notificacion._id.toString(),
+        tipo: tiposMap[notificacion.tipo.toString()] || 'Desconocido',
+        titulo: notificacion.titulo,
+        mensaje: notificacion.mensaje,
+        contenido: notificacion.contenido,
+        fecha: formatNotificationDateForClient(notificacion.fecha),
+        url: notificacion.url
+            ? buildNotificationDownloadUrl(notificacion._id, notificacion.url)
+            : null,
+        estado: false,
+    };
 };
 
 const normalizeNotificationTargets = (objetivo) => {
@@ -145,8 +285,12 @@ const assignNotificationToWorkers = async ({
     }
 };
 
-const emitNotificationToWorkers = (io, trabajadores, nuevaNotificacion) => {
-    const clientNotification = sanitizeNotificationForClient(nuevaNotificacion);
+const emitNotificationToWorkers = async (io, trabajadores, nuevaNotificacion) => {
+    if (!io || !nuevaNotificacion) {
+        return;
+    }
+
+    const clientNotification = await formatLiveNotificationForApp(nuevaNotificacion);
     for (const trabajador of trabajadores) {
         io.to(`worker:${trabajador.Rut}`)
             .emit('nuevaNotificacion', clientNotification);
@@ -268,40 +412,88 @@ const obtenerNotificacionesDelUser = async (req, res) => {
         _id: { $in: notificacionesIds }
       });
   
-      const vistasSet = new Set(trabajador.vistas.map(id => id.toString()));
-  
-      const tipoIds = [
-        ...new Set(
-          notificaciones.map(notificacion => notificacion.tipo.toString())
-        )
-      ];
-      const tipos = await TipoNotificacion.find({
-        _id: { $in: tipoIds }
-      });
-  
-      const tiposMap = tipos.reduce((acc, tipo) => {
-        acc[tipo._id.toString()] = tipo.value;
-        return acc;
-      }, {});
-  
-      const notificacionesConTipo = notificaciones.map(notificacion => ({
-        id: notificacion._id,
-        tipo: tiposMap[notificacion.tipo.toString()] || "Desconocido",
-        titulo: notificacion.titulo,
-        mensaje: notificacion.mensaje,
-        contenido: notificacion.contenido,
-        fecha: notificacion.fecha,
-        url: notificacion.url
-          ? buildNotificationDownloadUrl(notificacion._id, notificacion.url)
-          : null,
-        estado: vistasSet.has(notificacion._id.toString())
-      }));
+      const notificacionesConTipo = await formatNotificationsForApp(notificaciones, trabajador);
   
       return res.send(notificacionesConTipo);
     } catch (error) {
       return res.status(500).send("Error interno del servidor: " + error.message);
     }
   };
+
+const obtenerNotificacionesDelUserPaginadas = async (req, res) => {
+    const { token, cursor } = req.body;
+    const tokenValido = await Token.validartoken(token);
+
+    if (!tokenValido.valid) {
+        return res.status(401).send('Token inválido');
+    }
+
+    try {
+        const range = req.body.range === 'older' ? 'older' : 'today';
+        const limit = normalizeNotificationPageLimit(req.body.limit);
+        const { rut } = tokenValido.token;
+        const trabajador = await trabajador_MongooseModel.findOne({
+            Rut: { $eq: String(rut) },
+        });
+
+        if (!trabajador) {
+            return res.status(404).send('Trabajador no encontrado');
+        }
+
+        const notificacionesIds = getWorkerNotificationIds(trabajador);
+        if (notificacionesIds.length === 0) {
+            return res.send({
+                items: [],
+                nextCursor: null,
+                hasMore: false,
+                range,
+                totalLoaded: 0,
+            });
+        }
+
+        const startOfToday = moment()
+            .tz(NOTIFICATION_TIMEZONE)
+            .startOf('day')
+            .toDate();
+        const startOfTomorrow = moment()
+            .tz(NOTIFICATION_TIMEZONE)
+            .add(1, 'day')
+            .startOf('day')
+            .toDate();
+        const dateQuery = range === 'today'
+            ? { fecha: { $gte: startOfToday, $lt: startOfTomorrow } }
+            : { fecha: { $lt: startOfToday } };
+        const cursorQuery = buildNotificationCursorQuery(cursor);
+        const queryParts = [
+            { _id: { $in: notificacionesIds } },
+            dateQuery,
+        ];
+
+        if (Object.keys(cursorQuery).length > 0) {
+            queryParts.push(cursorQuery);
+        }
+
+        const notificaciones = await notificaciones_MongooseModel
+            .find({ $and: queryParts })
+            .sort({ fecha: -1, _id: -1 })
+            .limit(limit + 1);
+        const hasMore = notificaciones.length > limit;
+        const pageItems = hasMore ? notificaciones.slice(0, limit) : notificaciones;
+        const items = await formatNotificationsForApp(pageItems, trabajador);
+
+        return res.send({
+            items,
+            nextCursor: hasMore
+                ? encodeNotificationCursor(pageItems[pageItems.length - 1])
+                : null,
+            hasMore,
+            range,
+            totalLoaded: items.length,
+        });
+    } catch (error) {
+        return res.status(500).send(`Error interno del servidor: ${error.message}`);
+    }
+};
   
 const crearNotificacion = async (req, res) => {
     const { token, objetivo, tipo, titulo, mensaje, contenido, url } = req.body;
@@ -321,6 +513,9 @@ const crearNotificacion = async (req, res) => {
 
     try {
         const restipo = await TipoNotificacion.findOne({ value: { $eq: String(tipo) } });
+        if (!restipo) {
+            return res.status(400).send('Tipo de notificación no encontrado');
+        }
         const trabajadores = await getTargetWorkers(objetivoArray);
         const fechaNotificacion = moment().tz('America/Santiago');
         const nuevaNotificacion = createNotificationRecord({
@@ -349,7 +544,7 @@ const crearNotificacion = async (req, res) => {
         });
 
         await nuevaNotificacion.save();
-        emitNotificationToWorkers(req.io, trabajadores, nuevaNotificacion);
+        await emitNotificationToWorkers(req.io, trabajadores, nuevaNotificacion);
 
         return res.status(201).send('Notificación creada correctamente');
     } catch (error) {
@@ -376,6 +571,9 @@ const crearNotificacionDocumento = async (req, res) => {
 
     try {
         const restipo = await TipoNotificacion.findOne({ value: { $eq: String(tipo) } });
+        if (!restipo) {
+            return res.status(400).send('Tipo de notificación no encontrado');
+        }
         const trabajadores = await getTargetWorkers(objetivoArray);
         const archivo = req.file;
         const savedAttachment = await saveNotificationAttachment(archivo);
@@ -387,6 +585,9 @@ const crearNotificacionDocumento = async (req, res) => {
         const resTipodocumento = await tipoDocumento_MongooseModel.findOne({
             value: 'Notificacion',
         });
+        if (!resTipodocumento) {
+            return res.status(400).send('Tipo de documento no encontrado');
+        }
         const nuevoDocumento = new documentos_MongooseModel({
             _id: new mongoose.Types.ObjectId(),
             tipo: resTipodocumento._id,
@@ -408,7 +609,7 @@ const crearNotificacionDocumento = async (req, res) => {
         const pushData = buildPushNotificationData({
             contenido,
             notificationId: nuevaNotificacion._id,
-            tipo: resTipodocumento.value,
+            tipo: restipo.value,
             fecha: fechaNotificacion,
             url: savedAttachment.finalPath,
         });
@@ -423,7 +624,7 @@ const crearNotificacionDocumento = async (req, res) => {
         });
 
         await nuevaNotificacion.save();
-        emitNotificationToWorkers(req.io, trabajadores, nuevaNotificacion);
+        await emitNotificationToWorkers(req.io, trabajadores, nuevaNotificacion);
 
         return res.status(201).send('Notificación creada correctamente');
     } catch (error) {
@@ -579,20 +780,36 @@ const pushNotification = async ({ userId, titulo, mensaje, data }) => {
     try {
         const usuario = await trabajador_MongooseModel.findById(userId);
         if (!usuario?.tokenPush) {
+            console.warn('Push omitida: trabajador sin tokenPush', {
+                userId: String(userId),
+                rut: usuario?.Rut,
+            });
             return null;
         }
         const tokenPush = usuario.tokenPush;
 
         if (!tokenPush.startsWith('ExponentPushToken')) {
+            console.warn('Push omitida: tokenPush Expo inválido', {
+                userId: String(userId),
+                rut: usuario.Rut,
+            });
             return null;
         }
 
-        const { result } = await sendExpoPushNotification({
+        const { ok, result } = await sendExpoPushNotification({
             tokenPush,
             titulo,
             mensaje,
             data,
         });
+        const pushResult = Array.isArray(result?.data) ? result.data[0] : result?.data;
+        if (!ok || pushResult?.status === 'error' || result?.errors) {
+            console.warn('Expo Push respondió con error', {
+                userId: String(userId),
+                rut: usuario.Rut,
+                result,
+            });
+        }
         return result;
     } catch (error) {
         logHandledError('Error al enviar notificación push', error);
@@ -693,5 +910,6 @@ module.exports = {
     pushNotificationOLD,
     crearNotificacionDocumento,
     obtenerNotificacionesDelUser,
+    obtenerNotificacionesDelUserPaginadas,
     descargarNotificacionDocumento,
 };

@@ -12,6 +12,7 @@ const {
     pushNotificationOLD,
     crearNotificacionDocumento,
     obtenerNotificacionesDelUser,
+    obtenerNotificacionesDelUserPaginadas,
     descargarNotificacionDocumento,
 } = require('../controllers/notificaciones.controller.js');
 
@@ -21,6 +22,7 @@ router.post('/buscarNotificacion', requireAuth, buscarNotificacion);
 router.post('/detallesNotificacion', requireAuth, detallesNotificacion);
 router.post('/obtenerNotificaciones', requireAuth, obtenerNotificaciones);
 router.post('/getNoti', requireAuth, obtenerNotificacionesDelUser);
+router.post('/getNotiPage', requireAuth, obtenerNotificacionesDelUserPaginadas);
 router.post('/infoNotificaciones', requireAuth, requireRole('administracion', 'supervisor'), infoNotificaciones);
 router.post('/pushNotification', requireAuth, requireRole('administracion', 'supervisor'), pushNotificationOLD);
 router.post('/crearNotificacionDocumento', requireAuth, requireRole('administracion', 'supervisor'), uploadLimiter, uploadMemory.single('file'),crearNotificacionDocumento);
