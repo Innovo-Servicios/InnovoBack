@@ -1,6 +1,9 @@
 node_modules
 package-lock.json
 .env
+.venv*
+__pycache__
+*.py[cod]
 uploads
 google.services.json
 serviceAccountKey.json
@@ -12,3 +15,5 @@ final_service_status.txt
 final_retry.txt
 err.log
 backend.log
+scripts
+storage

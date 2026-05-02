@@ -17,7 +17,7 @@ const {
 } = require('../controllers/notificaciones.controller.js');
 
 router.post('/crearNotificacion', requireAuth, requireRole('administracion', 'supervisor'), crearNotificacion);
-router.post('/eliminarNotificacion', requireAuth, requireRole('administracion', 'supervisor'), eliminarNotificacion);
+router.post('/eliminarNotificacion', requireAuth, eliminarNotificacion);
 router.post('/buscarNotificacion', requireAuth, buscarNotificacion);
 router.post('/detallesNotificacion', requireAuth, detallesNotificacion);
 router.post('/obtenerNotificaciones', requireAuth, obtenerNotificaciones);

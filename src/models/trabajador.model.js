@@ -14,6 +14,7 @@ const trabajador_Mongoose = new mongoose.Schema({
     "clave": { type: String, required: true },
     "notificaciones": [{ type: mongoose.Schema.Types.ObjectId, required: true }],//
     "vistas": [{ type: mongoose.Schema.Types.ObjectId, required: false }],//
+    "notificacionesEliminadas": [{ type: mongoose.Schema.Types.ObjectId, required: false }],
     "documentos": [{ type: mongoose.Schema.Types.ObjectId }],//
     "rol": { type: mongoose.Schema.Types.ObjectId, required: false },//
     "rolTemporal": { //

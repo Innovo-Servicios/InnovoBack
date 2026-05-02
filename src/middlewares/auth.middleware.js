@@ -50,6 +50,7 @@ const requireAuth = async (req, res, next) => {
 
         req.auth = tokenValido.token;
         req.authUser = tokenValido.user;
+        req.accessToken = token;
 
         if (req.body && !req.body.token) {
             req.body.token = token;

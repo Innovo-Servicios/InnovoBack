@@ -34,6 +34,11 @@ const NOTIFICATION_IMAGE_FORMATS = new Set([
 const NOTIFICATION_DEFAULT_PAGE_LIMIT = 20;
 const NOTIFICATION_MAX_PAGE_LIMIT = 50;
 const NOTIFICATION_TIMEZONE = 'America/Santiago';
+const NOTIFICATION_CHANNEL_ID = 'default';
+const EXPO_PUSH_RECEIPT_DELAY_MS = Number.parseInt(
+    process.env.EXPO_PUSH_RECEIPT_DELAY_MS || '30000',
+    10
+);
 
 const logHandledError = (context, error) => {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -43,6 +48,19 @@ const logHandledError = (context, error) => {
 const buildNotificationDownloadUrl = (notificationId, notificationPath) => {
     const safeFileName = path.basename(String(notificationPath || 'adjunto'));
     return `/notificaciones/archivo/${notificationId}/${encodeURIComponent(safeFileName)}`;
+};
+
+const formatNotificationUrlForClient = (notificationId, notificationUrl) => {
+    if (!notificationUrl) {
+        return null;
+    }
+
+    const stringUrl = String(notificationUrl);
+    if (/^https?:\/\//i.test(stringUrl)) {
+        return stringUrl;
+    }
+
+    return buildNotificationDownloadUrl(notificationId, stringUrl);
 };
 
 const formatNotificationDateForClient = (fecha) => {
@@ -63,12 +81,10 @@ const sanitizeNotificationForClient = (notificacion) => {
         ? notificacion.toObject()
         : { ...notificacion };
 
-    if (plainNotification.url) {
-        plainNotification.url = buildNotificationDownloadUrl(
-            plainNotification._id || plainNotification.id,
-            plainNotification.url
-        );
-    }
+    plainNotification.url = formatNotificationUrlForClient(
+        plainNotification._id || plainNotification.id,
+        plainNotification.url
+    );
 
     return plainNotification;
 };
@@ -136,12 +152,24 @@ const buildNotificationCursorQuery = (cursor) => {
     };
 };
 
-const getWorkerNotificationIds = (trabajador) => [
-    ...new Set([
-        ...(trabajador.notificaciones || []).map((id) => id.toString()),
-        ...(trabajador.vistas || []).map((id) => id.toString()),
-    ]),
-];
+const toObjectIdStrings = (ids = []) => ids.map((id) => id.toString());
+
+const hasObjectId = (ids = [], targetId) =>
+    toObjectIdStrings(ids).includes(String(targetId));
+
+const getHiddenNotificationIds = (trabajador) =>
+    new Set(toObjectIdStrings(trabajador.notificacionesEliminadas || []));
+
+const getWorkerNotificationIds = (trabajador) => {
+    const hiddenIds = getHiddenNotificationIds(trabajador);
+
+    return [
+        ...new Set([
+            ...toObjectIdStrings(trabajador.notificaciones || []),
+            ...toObjectIdStrings(trabajador.vistas || []),
+        ]),
+    ].filter((id) => !hiddenIds.has(id));
+};
 
 const getNotificationTypeMap = async (notificaciones) => {
     const tipoIds = [
@@ -177,9 +205,7 @@ const formatNotificationsForApp = async (notificaciones, trabajador) => {
         mensaje: notificacion.mensaje,
         contenido: notificacion.contenido,
         fecha: formatNotificationDateForClient(notificacion.fecha),
-        url: notificacion.url
-            ? buildNotificationDownloadUrl(notificacion._id, notificacion.url)
-            : null,
+        url: formatNotificationUrlForClient(notificacion._id, notificacion.url),
         estado: vistasSet.has(notificacion._id.toString()),
     }));
 };
@@ -194,9 +220,7 @@ const formatLiveNotificationForApp = async (notificacion) => {
         mensaje: notificacion.mensaje,
         contenido: notificacion.contenido,
         fecha: formatNotificationDateForClient(notificacion.fecha),
-        url: notificacion.url
-            ? buildNotificationDownloadUrl(notificacion._id, notificacion.url)
-            : null,
+        url: formatNotificationUrlForClient(notificacion._id, notificacion.url),
         estado: false,
     };
 };
@@ -237,10 +261,10 @@ const buildPushNotificationData = ({
     url,
 }) => ({
     contenidos: contenido,
-    idNotificacion: notificationId,
+    idNotificacion: notificationId?.toString(),
     tipo,
-    fecha,
-    url: url || null,
+    fecha: formatNotificationDateForClient(fecha),
+    url: formatNotificationUrlForClient(notificationId, url),
 });
 
 const createNotificationRecord = ({
@@ -342,6 +366,9 @@ const sendExpoPushNotification = async ({ tokenPush, titulo, mensaje, data }) =>
     const mensajeNotificacion = {
         to: tokenPush,
         sound: 'default',
+        channelId: NOTIFICATION_CHANNEL_ID,
+        priority: 'high',
+        tag: data?.idNotificacion ? String(data.idNotificacion) : undefined,
         title: titulo,
         body: mensaje,
         data: data || {},
@@ -362,6 +389,52 @@ const sendExpoPushNotification = async ({ tokenPush, titulo, mensaje, data }) =>
     };
 };
 
+const getExpoPushReceiptIds = (result) => {
+    const tickets = Array.isArray(result?.data) ? result.data : [result?.data];
+    return tickets
+        .filter((ticket) => ticket?.status === 'ok' && ticket?.id)
+        .map((ticket) => ticket.id);
+};
+
+const scheduleExpoPushReceiptCheck = ({ result, userId, rut }) => {
+    const receiptIds = getExpoPushReceiptIds(result);
+    if (receiptIds.length === 0) {
+        return;
+    }
+
+    const delay = Number.isFinite(EXPO_PUSH_RECEIPT_DELAY_MS)
+        ? EXPO_PUSH_RECEIPT_DELAY_MS
+        : 30000;
+    const timeout = setTimeout(async () => {
+        try {
+            const response = await fetch('https://exp.host/--/api/v2/push/getReceipts', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ ids: receiptIds }),
+            });
+            const receiptResult = await response.json();
+            const failedReceipts = Object.entries(receiptResult?.data || {})
+                .filter(([, receipt]) => receipt?.status === 'error');
+
+            if (!response.ok || failedReceipts.length > 0 || receiptResult?.errors) {
+                console.warn('Expo Push receipts con error', {
+                    userId: String(userId),
+                    rut,
+                    receiptResult,
+                });
+            }
+        } catch (error) {
+            logHandledError(`Error al consultar recibos Expo Push para ${rut || userId}`, error);
+        }
+    }, delay);
+
+    if (typeof timeout.unref === 'function') {
+        timeout.unref();
+    }
+};
+
 const obtenerNotificaciones = async (req, res) => {
     const { rut, token } = req.body;
     const tokenValido = await Token.validartoken(token);
@@ -373,8 +446,10 @@ const obtenerNotificaciones = async (req, res) => {
             if (!trabajador) {
                 return res.status(404).send('Trabajador no encontrado');
             }
+            const hiddenIds = getHiddenNotificationIds(trabajador);
             const notificaciones = await notificaciones_MongooseModel.find({
-                _id: trabajador.notificaciones,
+                _id: (trabajador.notificaciones || [])
+                    .filter((id) => !hiddenIds.has(id.toString())),
             });
             res.send(notificaciones.map((notificacion) => sanitizeNotificationForClient(notificacion)));
         } catch (error) {
@@ -401,12 +476,7 @@ const obtenerNotificacionesDelUser = async (req, res) => {
         return res.status(404).send("Trabajador no encontrado");
       }
   
-      const notificacionesIds = [
-        ...new Set([
-          ...trabajador.notificaciones.map(id => id.toString()),
-          ...trabajador.vistas.map(id => id.toString())
-        ])
-      ];
+      const notificacionesIds = getWorkerNotificationIds(trabajador);
   
       const notificaciones = await notificaciones_MongooseModel.find({
         _id: { $in: notificacionesIds }
@@ -496,7 +566,8 @@ const obtenerNotificacionesDelUserPaginadas = async (req, res) => {
 };
   
 const crearNotificacion = async (req, res) => {
-    const { token, objetivo, tipo, titulo, mensaje, contenido, url } = req.body;
+    const { objetivo, tipo, titulo, mensaje, contenido, url } = req.body;
+    const token = req.body.token || req.accessToken;
     const tokenValido = await Token.validartoken(token);
     if (!tokenValido.valid) {
         return res.status(401).send('Token inválido');
@@ -554,7 +625,8 @@ const crearNotificacion = async (req, res) => {
     }
 };
 const crearNotificacionDocumento = async (req, res) => {
-    const { token, objetivo, tipo, titulo, mensaje, contenido } = req.body;
+    const { objetivo, tipo, titulo, mensaje, contenido } = req.body;
+    const token = req.body.token || req.accessToken;
     const tokenValido = await Token.validartoken(token);
     if (!tokenValido.valid) {
         return res.status(401).send('Token inválido');
@@ -636,34 +708,68 @@ const crearNotificacionDocumento = async (req, res) => {
 const eliminarNotificacion = async (req, res) => {
     const { token, id } = req.body;
     const tokenValido = await Token.validartoken(token);
-    if (tokenValido.valid) {
-        try {
-            const trabajador = await trabajador_MongooseModel.findOne({ Rut: { $eq: String(tokenValido.token.rut) } });
-            const vista= await notificacion_vista_MongooseModel.findOne({ trabajador: { $eq: trabajador._id }, notificacion: { $eq: String(id) } });
-            if(!vista){
-                const registro= new notificacion_vista_MongooseModel({
-                    trabajador:trabajador._id,
-                    notificacion:id,
-                    tiempo:moment().tz('America/Santiago')
-                });
-                await registro.save();
-            }
-            trabajador.notificaciones = trabajador.notificaciones.filter(
-                (notificacionId) => !notificacionId.equals(id)
-            );
-            trabajador.vistas = trabajador.vistas.filter(
-                (notificacionId) => !notificacionId.equals(id)
-            );
+    if (!tokenValido.valid) {
+        return res.status(401).send('Token inválido');
+    }
 
-            await trabajador.save();
-            res.status(200).send('Notificación eliminada correctamente');
-        } catch (error) {
-            res.status(500).send(
-                'Error interno del servidor: ' + error.message
-            );
+    if (!mongoose.Types.ObjectId.isValid(String(id))) {
+        return res.status(400).send('Notificación inválida');
+    }
+
+    try {
+        const trabajador = await trabajador_MongooseModel.findOne({
+            Rut: { $eq: String(tokenValido.token.rut) },
+        });
+        if (!trabajador) {
+            return res.status(404).send('Trabajador no encontrado');
         }
-    } else {
-        res.status(401).send('Token inválido');
+
+        const notificacion = await notificaciones_MongooseModel.findById(id);
+        if (!notificacion) {
+            return res.status(404).send('Notificación no encontrada');
+        }
+
+        const assignedWorkerIds = toObjectIdStrings(notificacion.trabajadores || []);
+        if (!assignedWorkerIds.includes(trabajador._id.toString())) {
+            return res.status(403).send('Notificación no asignada al trabajador');
+        }
+
+        let vista = await notificacion_vista_MongooseModel.findOne({
+            trabajador: { $eq: trabajador._id },
+            notificacion: { $eq: String(id) },
+        });
+        const hasViewedNotification = Boolean(vista) || hasObjectId(trabajador.vistas, id);
+        if (!hasViewedNotification) {
+            return res
+                .status(409)
+                .send('Debes leer la notificación antes de eliminarla');
+        }
+
+        if (!vista) {
+            vista = new notificacion_vista_MongooseModel({
+                trabajador: trabajador._id,
+                notificacion: id,
+                tiempo: moment().tz('America/Santiago').format('DD-MM-YYYY'),
+            });
+            await vista.save();
+        }
+
+        trabajador.notificaciones = (trabajador.notificaciones || []).filter(
+            (notificacionId) => !notificacionId.equals(id)
+        );
+        if (!hasObjectId(trabajador.vistas, id)) {
+            trabajador.vistas.push(id);
+        }
+        if (!hasObjectId(trabajador.notificacionesEliminadas, id)) {
+            trabajador.notificacionesEliminadas.push(id);
+        }
+
+        await trabajador.save();
+        return res.status(200).send('Notificación eliminada correctamente');
+    } catch (error) {
+        return res.status(500).send(
+            'Error interno del servidor: ' + error.message
+        );
     }
 };
 const infoNotificaciones = async (req, res) => {
@@ -736,37 +842,46 @@ const detallesNotificacion = async (req, res) => {
             return res.status(401).send('Token inválido');
         }
 
-        const novistos = await trabajador_MongooseModel.find({
-            notificaciones: { $in: [idNotificacion] },
-        });
-        const vistos = await trabajador_MongooseModel.find({
-            vistas: { $in: [idNotificacion] },
-        });
+        if (!mongoose.Types.ObjectId.isValid(String(idNotificacion))) {
+            return res.status(400).send('Notificación inválida');
+        }
 
-        const trabajadoresNoVistos = await Promise.all(
-            novistos.map(async (trabajador) => {
-                return {
-                    rut: trabajador.Rut,
-                    nombre: trabajador.Nombre,
-                };
-            })
+        const notificacion = await notificaciones_MongooseModel.findById(idNotificacion);
+        if (!notificacion) {
+            return res.status(404).send('Notificación no encontrada');
+        }
+
+        const assignedWorkerIds = notificacion.trabajadores || [];
+        const trabajadores = await trabajador_MongooseModel
+            .find({ _id: { $in: assignedWorkerIds } })
+            .select('Rut Nombre');
+        const vistas = await notificacion_vista_MongooseModel.find({
+            notificacion: { $eq: String(idNotificacion) },
+            trabajador: { $in: assignedWorkerIds },
+        });
+        const vistasMap = new Map(
+            vistas.map((vista) => [vista.trabajador.toString(), vista])
         );
+        const trabajadoresVistos = [];
+        const trabajadoresNoVistos = [];
 
-        const trabajadoresVistos = await Promise.all(
-            vistos.map(async (trabajador) => {
-                const vista = await notificacion_vista_MongooseModel.findOne({
-                    trabajador: { $eq: trabajador._id },
-                    notificacion: { $eq: String(idNotificacion) },
+        trabajadores.forEach((trabajador) => {
+            const vista = vistasMap.get(trabajador._id.toString());
+            const item = {
+                rut: trabajador.Rut,
+                nombre: trabajador.Nombre,
+            };
+
+            if (vista) {
+                trabajadoresVistos.push({
+                    ...item,
+                    fechaVista: vista.tiempo || null,
                 });
-                return {
-                    rut: trabajador.Rut,
-                    nombre: trabajador.Nombre,
-                    fechaVista: vista
-                        ? moment(vista.fecha).format('DD-MM-YYYY')
-                        : null,
-                };
-            })
-        );
+                return;
+            }
+
+            trabajadoresNoVistos.push(item);
+        });
 
         res.status(200).send({
             no_vista: trabajadoresNoVistos,
@@ -810,6 +925,11 @@ const pushNotification = async ({ userId, titulo, mensaje, data }) => {
                 result,
             });
         }
+        scheduleExpoPushReceiptCheck({
+            result,
+            userId,
+            rut: usuario.Rut,
+        });
         return result;
     } catch (error) {
         logHandledError('Error al enviar notificación push', error);

@@ -31,21 +31,27 @@ const registroNotificacion = async (req, res) => {
                 _id: { $eq: String(idNotificacion) },
             });
             if (trabajador && notificacion) {
-                const notificacionVista = new notificacion_vista_MongooseModel({
-                    notificacion: idNotificacion,
-                    trabajador: trabajador._id,
-                    tiempo: moment()
-                        .tz('America/Santiago')
-                        .format('DD-MM-YYYY'),
+                let notificacionVista = await notificacion_vista_MongooseModel.findOne({
+                    notificacion: { $eq: String(idNotificacion) },
+                    trabajador: { $eq: trabajador._id },
                 });
+                if (!notificacionVista) {
+                    notificacionVista = new notificacion_vista_MongooseModel({
+                        notificacion: idNotificacion,
+                        trabajador: trabajador._id,
+                        tiempo: moment()
+                            .tz('America/Santiago')
+                            .format('DD-MM-YYYY'),
+                    });
+                    await notificacionVista.save();
+                }
                 await trabajador_MongooseModel.updateOne(
                     { Rut: { $eq: String(tokenValido.token.rut) } },
                     {
                         $pull: { notificaciones: idNotificacion },
-                        $push: { vistas: idNotificacion },
+                        $addToSet: { vistas: idNotificacion },
                     }
                 );
-                await notificacionVista.save();
                 //Evento de cambio de bolsa
                 res.status(200).send('Notificación registrada');
             } else {
