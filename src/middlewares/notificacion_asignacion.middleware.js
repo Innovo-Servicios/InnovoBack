@@ -38,21 +38,17 @@ const asignacionATE = async (req, res) => {
                 }
             }).lean();
 
-
-            if (!asignaciones) {
-                return res.status(404).send('No se encontraron asignaciones para el sector y fecha especificados.');
-            }
-
-            const trabajador = await trabajador_MongooseModel.findOne({ _id: { $eq: asignaciones.Trabajador } }).lean();
-            if (!trabajador) {
-                return res.status(404).send('Trabajador no encontrado.');
+            let trabajadorId = null;
+            if (asignaciones) {
+                const trabajador = await trabajador_MongooseModel.findOne({ _id: { $eq: asignaciones.Trabajador } }).lean();
+                if (trabajador) trabajadorId = trabajador._id;
             }
 
             const ate = new ate_MongooseModel({
                 comentario: texto,
                 tipo: Tnovedad._id,
                 fecha_ate: fechaConsultaConHoraCero,
-                Trabajador: trabajador._id,
+                ...(trabajadorId && { Trabajador: trabajadorId }),
                 direccion: direccionexistente._id
             })
             await ate.save();
@@ -277,4 +273,21 @@ const repsuestaATE = async (req, res) => {
 
 
 
-module.exports = { asignacionATE, obtenerATE, repsuestaATE, obtenerATE_Adm };
+const editarATE = async (req, res) => {
+    const { token, id_ate, Trabajador } = req.body;
+    const tokenValido = await Token.validartoken(token);
+    if (!tokenValido.valid) return res.status(401).send('Token inválido');
+    try {
+        const ate = await ate_MongooseModel.findByIdAndUpdate(
+            id_ate,
+            { Trabajador },
+            { new: true }
+        );
+        if (!ate) return res.status(404).send('ATE no encontrada');
+        res.status(200).send('ATE actualizada correctamente');
+    } catch (error) {
+        res.status(500).send('Error interno: ' + error.message);
+    }
+};
+
+module.exports = { asignacionATE, obtenerATE, repsuestaATE, obtenerATE_Adm, editarATE };

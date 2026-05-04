@@ -61,7 +61,7 @@ const excelAsignaciones = (req, res) => {
       return res.status(400).json({ message: 'Archivo Excel inválido', error: err.message });
     }
 
-    const pythonScriptPath = path.join(__dirname, '../../../Asistente', 'Funciones.py');
+    const pythonScriptPath = path.join(__dirname, '../../scripts', 'Funciones.py');
     execFile('python3', [pythonScriptPath, 'asignar_sector', finalPath], (error) => {
       if (error) {
         return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: error.message });
@@ -101,7 +101,7 @@ const excelAte = (req, res) => {
       return res.status(400).json({ message: 'Archivo Excel inválido', error: err.message });
     }
 
-    const pythonScriptPath = path.join(__dirname, '../../../Asistente', 'Funciones.py');
+    const pythonScriptPath = path.join(__dirname, '../../scripts', 'Funciones.py');
     execFile('python3', [pythonScriptPath, 'asignar_ate', finalPath], (error) => {
       if (error) {
         return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: error.message });
@@ -119,7 +119,7 @@ const excelAte = (req, res) => {
 const descarga_ATE = (req, res) => {
   try {
     const { fecha } = req.body;
-    const pythonScriptPath = path.join(__dirname, '../../../Asistente', 'Funciones.py');
+    const pythonScriptPath = path.join(__dirname, '../../scripts', 'Funciones.py');
 
     execFile('python3', [pythonScriptPath, 'excel_ate', '--fecha_inicio', fecha], (error, stdout, stderr) => {
       if (error) {
@@ -156,7 +156,7 @@ const descarga_ATE = (req, res) => {
 const descargar_novedad = (req, res) => {
   try {
     const { fechainicio, fechafin } = req.body;
-    const pythonScriptPath = path.join(__dirname, '../../../Asistente', 'Funciones.py');
+    const pythonScriptPath = path.join(__dirname, '../../scripts', 'Funciones.py');
 
     execFile('python3', [pythonScriptPath, 'excel_novedad', '--fecha_inicio', fechainicio, '--fecha_fin', fechafin], (error, stdout, stderr) => {
       if (error) {

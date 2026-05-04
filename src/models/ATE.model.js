@@ -15,8 +15,8 @@ const ate = new mongoose.Schema({
     },
     Trabajador: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'trabajador', 
-        required: true
+        ref: 'trabajador',
+        required: false
     },
     fecha_ate: {
         type: Date

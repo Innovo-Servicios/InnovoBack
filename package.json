@@ -10,6 +10,7 @@
     "dayjs": "^1.11.20",
     "dayjs-plugin-utc": "^0.1.2",
     "dotenv": "^16.6.1",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-mongo-sanitize": "^2.2.0",
     "express-rate-limit": "^8.3.2",
