@@ -39,6 +39,15 @@ const EXPO_PUSH_RECEIPT_DELAY_MS = Number.parseInt(
     process.env.EXPO_PUSH_RECEIPT_DELAY_MS || '30000',
     10
 );
+const NOTIFICATION_UPLOAD_DIRS = [
+    path.join(__dirname, '../../storage/uploads'),
+    path.join(__dirname, '../../uploads'),
+    '/home/backend/Innovo-app/Backend/uploads',
+    ...(process.env.NOTIFICATION_UPLOAD_DIRS || '')
+        .split(',')
+        .map((uploadDir) => uploadDir.trim())
+        .filter(Boolean),
+].map((uploadDir) => path.resolve(uploadDir));
 
 const logHandledError = (context, error) => {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -48,6 +57,24 @@ const logHandledError = (context, error) => {
 const buildNotificationDownloadUrl = (notificationId, notificationPath) => {
     const safeFileName = path.basename(String(notificationPath || 'adjunto'));
     return `/notificaciones/archivo/${notificationId}/${encodeURIComponent(safeFileName)}`;
+};
+
+const resolveNotificationAttachmentPath = (notificationPath) => {
+    const safeFileName = path.basename(String(notificationPath || ''));
+    if (!safeFileName) {
+        return null;
+    }
+
+    return NOTIFICATION_UPLOAD_DIRS
+        .map((uploadDir) => path.join(uploadDir, safeFileName))
+        .find((candidatePath) => {
+            const resolvedPath = path.resolve(candidatePath);
+            const allowedBasePath = NOTIFICATION_UPLOAD_DIRS.find((uploadDir) =>
+                resolvedPath.startsWith(`${uploadDir}${path.sep}`)
+            );
+
+            return Boolean(allowedBasePath) && fs.existsSync(resolvedPath);
+        }) || null;
 };
 
 const formatNotificationUrlForClient = (notificationId, notificationUrl) => {
@@ -1002,13 +1029,8 @@ const descargarNotificacionDocumento = async (req, res) => {
         }
 
         const safeFileName = path.basename(String(notificacion.url));
-        const uploadsBasePath = path.join(__dirname, '../../storage/uploads');
-        const uploadPath = path.join(uploadsBasePath, safeFileName);
-        if (!uploadPath.startsWith(`${uploadsBasePath}${path.sep}`)) {
-            return res.status(404).send('Documento no encontrado');
-        }
-
-        if (!fs.existsSync(uploadPath)) {
+        const uploadPath = resolveNotificationAttachmentPath(notificacion.url);
+        if (!uploadPath) {
             return res.status(404).send('Documento no encontrado');
         }
 

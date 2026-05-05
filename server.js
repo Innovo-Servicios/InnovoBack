@@ -142,15 +142,14 @@ const apiDebugLogger = (req, res, next) => {
   return next();
 };
 
-const checkerScriptPath = process.env.CHECKER_SCRIPT_PATH
-  ? path.resolve(process.env.CHECKER_SCRIPT_PATH)
-  : path.resolve(__dirname, '../Asistente/checker.py');
-const pythonBinaryPath = process.env.PYTHON_BINARY_PATH
-  ? path.resolve(process.env.PYTHON_BINARY_PATH)
-  : '/usr/bin/python3';
-const restrictedChildProcessEnv = {
+const systemctlPath = process.env.SYSTEMCTL_PATH || '/usr/bin/systemctl';
+const botStatusScriptPath = process.env.BOT_STATUS_SCRIPT_PATH || '/usr/local/sbin/gpi-gmail-bot-status.sh';
+const botSystemdService = process.env.BOT_SYSTEMD_SERVICE || 'gpi-gmail-bot.service';
+const botSystemdTimer = process.env.BOT_SYSTEMD_TIMER || 'gpi-gmail-bot.timer';
+const botActiveStatuses = new Set(['ok', 'running']);
+const restrictedSystemEnv = {
   ...process.env,
-  PATH: '/usr/bin:/bin',
+  PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin',
 };
 const contentSecurityPolicyDirectives = {
   'default-src': ["'self'"],
@@ -169,13 +168,29 @@ if (isProduction) {
   contentSecurityPolicyDirectives['upgrade-insecure-requests'] = [];
 }
 
-const execCheckerScript = (args, callback) =>
-  execFile(
-    pythonBinaryPath,
-    [checkerScriptPath, ...args],
-    { env: restrictedChildProcessEnv },
-    callback
-  );
+const execFileAsync = (file, args, options = {}) =>
+  new Promise((resolve, reject) => {
+    execFile(
+      file,
+      args,
+      {
+        env: restrictedSystemEnv,
+        timeout: 120000,
+        maxBuffer: 1024 * 1024,
+        ...options,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          error.stdout = stdout;
+          error.stderr = stderr;
+          reject(error);
+          return;
+        }
+
+        resolve({ stdout, stderr });
+      }
+    );
+  });
 
 
 const ateatrasada = async () => {
@@ -287,16 +302,50 @@ app.use('/IMG_VERIFICACIONES', express.static(path.join(__dirname, './public/ima
 // Cargar las rutas
 require('./src/routes/main.routes.js')(app);
 
-const obtenerEstadoBot = (callback) => {
-  execCheckerScript(['--status'], (error, stdout, stderr) => {
-    if (error) {
-      console.error(`Error al ejecutar el script: ${error.message}`);
-      callback(false); // Asume estado falso en caso de error
-      return;
+const obtenerEstadoBot = async () => {
+  try {
+    const { stdout } = await execFileAsync(botStatusScriptPath, ['write']);
+    const status = String(stdout || '').trim().split(/\r?\n/).pop();
+    return botActiveStatuses.has(status);
+  } catch (error) {
+    logHandledError('Error al obtener estado del bot systemd', error);
+    return false;
+  }
+};
+
+const iniciarBotSystemd = async () => {
+  try {
+    await execFileAsync(systemctlPath, ['daemon-reload']);
+    try {
+      await execFileAsync(systemctlPath, ['reset-failed', botSystemdService]);
+    } catch (error) {
+      logHandledError('No se pudo resetear estado fallido del bot systemd', error);
     }
-    const estado = stdout.trim() === 'True';
-    callback(estado);
-  });
+    await execFileAsync(systemctlPath, ['enable', '--now', botSystemdTimer]);
+    await execFileAsync(systemctlPath, ['start', botSystemdService]);
+  } catch (error) {
+    logHandledError('Error al iniciar bot systemd', error);
+  }
+
+  return obtenerEstadoBot();
+};
+
+const detenerBotSystemd = async () => {
+  try {
+    await execFileAsync(systemctlPath, ['daemon-reload']);
+    await execFileAsync(systemctlPath, ['disable', '--now', botSystemdTimer]);
+    await execFileAsync(systemctlPath, ['stop', botSystemdService]);
+  } catch (error) {
+    logHandledError('Error al detener bot systemd', error);
+  }
+
+  return obtenerEstadoBot();
+};
+
+const emitirEstadoBot = async () => {
+  const estado = await obtenerEstadoBot();
+  io.to('role:administracion').to('role:supervisor').emit('estadoActualizado', estado);
+  return estado;
 };
 //
 const enviarNotificacion = (titulo, cuerpo, data = {}) => {
@@ -396,38 +445,23 @@ io.on('connection', (socket) => {
       }
     }, 5000)
   );
-  socket.on('estadoBot', () => {
+  socket.on('estadoBot', async () => {
     if (!isPrivilegedRole(currentUser.cargo)) {
       return;
     }
-    obtenerEstadoBot((estado) => {
-      io.to('role:administracion').to('role:supervisor').emit('estadoActualizado', estado);
-    });
+    await emitirEstadoBot();
   });
-  socket.on('actualizarEstadoBot', (estado) => {
+  socket.on('actualizarEstadoBot', async (estado) => {
     if (!isPrivilegedRole(currentUser.cargo)) {
       return;
     }
-    if (estado) {
-      execCheckerScript(['--start'], (error) => {
-        if (error) {
-          console.error(`Error al ejecutar el script: ${error.message}`);
-        }
-      });
-      setTimeout(() => {
-        io.to('role:administracion').to('role:supervisor').emit('estadoActualizado', estado);
-      }, 500);
-    }
-    else {
-      execCheckerScript(['--stop'], (error, stdout, stderr) => {
-        if (error) {
-          console.error(`Error al ejecutar el script: ${error.message}`);
-          return;
-        }
-        const estado = stdout.trim() === 'True';
-        io.to('role:administracion').to('role:supervisor').emit('estadoActualizado', estado);
-      });
-    }
+
+    const estadoDeseado = Boolean(estado);
+    const estadoActualizado = estadoDeseado
+      ? await iniciarBotSystemd()
+      : await detenerBotSystemd();
+
+    io.to('role:administracion').to('role:supervisor').emit('estadoActualizado', estadoActualizado);
   });
   socket.on('actualizarDireccion', async (data) => {
     if (!isPrivilegedRole(currentUser.cargo)) {

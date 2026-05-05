@@ -38,3 +38,33 @@ Ejecucion completa:
 ```bash
 python scripts/bot.py
 ```
+
+### Automatizacion con systemd
+
+El bot queda preparado para ejecutarse con `gpi-gmail-bot.timer` cada 8 horas:
+
+```bash
+systemctl status gpi-gmail-bot.timer
+systemctl list-timers --all | grep gpi-gmail-bot
+journalctl -u gpi-gmail-bot.service -n 100 --no-pager
+```
+
+El estado resumido de la ultima ejecucion se actualiza automaticamente en:
+
+```bash
+cat final_service_status.txt
+cat service_error.txt
+```
+
+Tambien se puede refrescar manualmente con:
+
+```bash
+/usr/local/sbin/gpi-gmail-bot-status.sh write
+```
+
+Antes de que la ejecucion real contra Gmail funcione, completa en `.env`:
+
+```bash
+BOT_GMAIL_USERNAME="correo@gmail.com"
+BOT_GMAIL_APP_PASSWORD="app-password-de-gmail"
+```
