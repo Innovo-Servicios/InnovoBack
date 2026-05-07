@@ -11,7 +11,10 @@ const { apoyo_MongooseModel } = require('../models/apoyo.model.js');
 const {direccion_MongooseModel}= require('../models/direccion.model.js')
 const {ate_MongooseModel}= require('../models/ATE.model.js')
 const dayjs = require('dayjs');
+const utc = require('dayjs/plugin/utc');
 const Token = require('../controllers/token.controller.js');
+
+dayjs.extend(utc);
 
 const asignarsector = async (req, res) => {
     const { token } = req.body;
@@ -286,6 +289,124 @@ const asignarApoyo = async (req, res) => {
     }
 };
 
+const obtenerVistaAsignaciones = async (req, res) => {
+    try {
+        const fechaInicio = req.body?.fechaInicio
+            ? dayjs.utc(req.body.fechaInicio)
+            : dayjs.utc().startOf('month');
+        const fechaFin = req.body?.fechaFin
+            ? dayjs.utc(req.body.fechaFin)
+            : dayjs.utc().endOf('month');
+
+        if (!fechaInicio.isValid() || !fechaFin.isValid()) {
+            return res.status(400).json({ message: 'Rango de fechas inválido' });
+        }
+
+        const inicio = fechaInicio.startOf('day').toDate();
+        const fin = fechaFin.endOf('day').toDate();
+
+        const asignaciones = await Asignacion.find({
+            fecha_asignacion: {
+                $gte: inicio,
+                $lte: fin,
+            },
+        })
+            .populate({
+                path: 'Trabajador',
+                select: 'Nombre Rut cargo',
+            })
+            .populate({
+                path: 'NumeroSector',
+                select: 'sector NumeroSector NumeroRuta empresa',
+                populate: {
+                    path: 'NumeroRuta',
+                    select: 'NumeroRuta',
+                },
+            })
+            .sort({ fecha_asignacion: 1, tipo: 1 })
+            .lean();
+
+        const trabajadores = new Set();
+        const sectores = new Set();
+        const porTrabajador = new Map();
+
+        const resultado = asignaciones.map((asignacion) => {
+            const trabajadorAsignado = asignacion.Trabajador || null;
+            const sectorAsignado = asignacion.NumeroSector || null;
+            const trabajadorId = trabajadorAsignado?._id?.toString() || 'sin-trabajador';
+            const sectorId = sectorAsignado?._id?.toString() || '';
+
+            if (trabajadorAsignado?._id) {
+                trabajadores.add(trabajadorId);
+            }
+
+            if (sectorId) {
+                sectores.add(sectorId);
+            }
+
+            const detalleTrabajador = {
+                id: trabajadorAsignado?._id?.toString() || null,
+                nombre: trabajadorAsignado?.Nombre || 'Sin trabajador',
+                rut: trabajadorAsignado?.Rut || '',
+                cargo: trabajadorAsignado?.cargo || '',
+            };
+
+            const detalleSector = {
+                id: sectorId || null,
+                nombre: sectorAsignado?.sector || 'Sin sector',
+                numero: sectorAsignado?.NumeroSector ?? null,
+                ruta: sectorAsignado?.NumeroRuta?.NumeroRuta ?? null,
+                empresa: sectorAsignado?.empresa || '',
+            };
+
+            const totalActual = porTrabajador.get(trabajadorId) || {
+                trabajador: detalleTrabajador,
+                total: 0,
+                lectura: 0,
+                reparto: 0,
+            };
+
+            totalActual.total += 1;
+            if (asignacion.tipo === 'lectura') {
+                totalActual.lectura += 1;
+            }
+            if (asignacion.tipo === 'reparto') {
+                totalActual.reparto += 1;
+            }
+            porTrabajador.set(trabajadorId, totalActual);
+
+            return {
+                id: asignacion._id.toString(),
+                fecha_asignacion: dayjs.utc(asignacion.fecha_asignacion).format('YYYY-MM-DD'),
+                tipo: asignacion.tipo,
+                trabajador: detalleTrabajador,
+                sector: detalleSector,
+            };
+        });
+
+        return res.status(200).json({
+            rango: {
+                fechaInicio: dayjs.utc(inicio).format('YYYY-MM-DD'),
+                fechaFin: dayjs.utc(fin).format('YYYY-MM-DD'),
+            },
+            resumen: {
+                total: resultado.length,
+                lectura: resultado.filter((asignacion) => asignacion.tipo === 'lectura').length,
+                reparto: resultado.filter((asignacion) => asignacion.tipo === 'reparto').length,
+                trabajadores: trabajadores.size,
+                sectores: sectores.size,
+            },
+            porTrabajador: Array.from(porTrabajador.values()).sort((a, b) =>
+                a.trabajador.nombre.localeCompare(b.trabajador.nombre, 'es')
+            ),
+            asignaciones: resultado,
+        });
+    } catch (error) {
+        console.error('Error al obtener vista de asignaciones:', error);
+        return res.status(500).json({ message: 'Error interno del servidor: ' + error.message });
+    }
+};
+
 module.exports = {
     asignarsector,
     modificarasigancion,
@@ -293,4 +414,5 @@ module.exports = {
     obtenerAsignacionDia,
     obtenerAsigMes,
     asignarApoyo,
+    obtenerVistaAsignaciones,
 };

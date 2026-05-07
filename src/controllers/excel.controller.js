@@ -2,10 +2,37 @@ const XLSX = require('xlsx');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const fs = require('node:fs');
+const { promisify } = require('node:util');
+
+const execFileAsync = promisify(execFile);
 
 const logHandledError = (context, error) => {
   const errorMessage = error instanceof Error ? error.message : String(error);
   console.error(`${context}: ${errorMessage}`);
+};
+
+const buildReportPath = (directory, originalName) => {
+  const safeName = path.parse(path.basename(originalName));
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return path.join(directory, `${safeName.name}-${timestamp}${safeName.ext}`);
+};
+
+const parseScriptJson = (stdout = '') => {
+  const trimmedOutput = String(stdout || '').trim();
+  if (!trimmedOutput) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmedOutput);
+  } catch (error) {
+    const jsonStart = trimmedOutput.indexOf('{');
+    if (jsonStart >= 0) {
+      return JSON.parse(trimmedOutput.slice(jsonStart));
+    }
+
+    throw error;
+  }
 };
 
 const processExcelFile = (req, res) => {
@@ -36,7 +63,7 @@ const processExcelFile = (req, res) => {
   }
 };
 
-const excelAsignaciones = (req, res) => {
+const excelAsignaciones = async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No se ha subido ningún archivo' });
@@ -47,36 +74,45 @@ const excelAsignaciones = (req, res) => {
     if (!fs.existsSync(filePath)) {
       fs.mkdirSync(filePath, { recursive: true });
     }
-    const fileName = path.basename(archivo.originalname);
-    const finalPath = path.join(filePath, fileName);
-
-    if (fs.existsSync(finalPath)) {
-      return res.status(400).json({ message: 'El archivo ya existe' });
-    }
+    const finalPath = buildReportPath(filePath, archivo.originalname);
     fs.writeFileSync(finalPath, archivo.buffer);
 
     try {
       XLSX.readFile(finalPath);
     } catch (err) {
+      fs.rmSync(finalPath, { force: true });
       return res.status(400).json({ message: 'Archivo Excel inválido', error: err.message });
     }
 
     const pythonScriptPath = path.join(__dirname, '../../scripts', 'Funciones.py');
-    execFile('python3', [pythonScriptPath, 'asignar_sector', finalPath], (error) => {
-      if (error) {
-        return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: error.message });
-      }
+    const { stdout } = await execFileAsync('python3', [pythonScriptPath, 'asignar_sector', finalPath], {
+      maxBuffer: 10 * 1024 * 1024,
     });
+    const report = parseScriptJson(stdout);
 
-    res.status(200).json({
+    res.status(200).json(report || {
       message: 'Archivo procesado correctamente',
     });
   } catch (error) {
-    res.status(500).json({ message: 'Error al procesar el archivo', error: error.message });
+    let report = null;
+    try {
+      report = parseScriptJson(error.stdout);
+    } catch (parseError) {
+      logHandledError('Error al leer la respuesta del script de asignaciones', parseError);
+    }
+
+    if (report) {
+      return res.status(error.code === 2 ? 400 : 500).json(report);
+    }
+
+    res.status(500).json({
+      message: 'Error al procesar el archivo',
+      error: error.stderr || error.message,
+    });
   }
 };
 
-const excelAte = (req, res) => {
+const excelAte = async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No se ha subido ningún archivo' });
@@ -87,26 +123,18 @@ const excelAte = (req, res) => {
     if (!fs.existsSync(filePath)) {
       fs.mkdirSync(filePath, { recursive: true });
     }
-    const fileName = path.basename(archivo.originalname);
-    const finalPath = path.join(filePath, fileName);
-
-    if (fs.existsSync(finalPath)) {
-      return res.status(400).json({ message: 'El archivo ya existe' });
-    }
+    const finalPath = buildReportPath(filePath, archivo.originalname);
     fs.writeFileSync(finalPath, archivo.buffer);
 
     try {
       XLSX.readFile(finalPath);
     } catch (err) {
+      fs.rmSync(finalPath, { force: true });
       return res.status(400).json({ message: 'Archivo Excel inválido', error: err.message });
     }
 
     const pythonScriptPath = path.join(__dirname, '../../scripts', 'Funciones.py');
-    execFile('python3', [pythonScriptPath, 'asignar_ate', finalPath], (error) => {
-      if (error) {
-        return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: error.message });
-      }
-    });
+    await execFileAsync('python3', [pythonScriptPath, 'asignar_ate', finalPath]);
 
     res.status(200).json({
       message: 'Archivo procesado correctamente',
