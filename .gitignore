@@ -17,3 +17,4 @@ err.log
 backend.log
 scripts
 storage
+public/images

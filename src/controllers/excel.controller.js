@@ -5,6 +5,11 @@ const fs = require('node:fs');
 const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
+const reportsRoot = path.resolve(__dirname, '../../storage/reports');
+const reportDirectories = {
+  ate: path.join(reportsRoot, 'ate'),
+  novedad: path.join(reportsRoot, 'novedades'),
+};
 
 const logHandledError = (context, error) => {
   const errorMessage = error instanceof Error ? error.message : String(error);
@@ -15,6 +20,50 @@ const buildReportPath = (directory, originalName) => {
   const safeName = path.parse(path.basename(originalName));
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   return path.join(directory, `${safeName.name}-${timestamp}${safeName.ext}`);
+};
+
+const resolveGeneratedReportPath = (stdout, allowedDirectory) => {
+  const rawOutput = String(stdout || '').trim();
+  if (!rawOutput) {
+    return null;
+  }
+
+  const generatedPath = rawOutput.split(/\r?\n/).filter(Boolean).pop().trim();
+  const resolvedPath = path.resolve(generatedPath);
+  const allowedPath = path.resolve(allowedDirectory);
+  const relativePath = path.relative(allowedPath, resolvedPath);
+
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    throw new Error('El archivo generado está fuera del directorio permitido');
+  }
+
+  return resolvedPath;
+};
+
+const downloadGeneratedReport = (res, stdout, allowedDirectory) => {
+  let resolvedPath;
+  try {
+    resolvedPath = resolveGeneratedReportPath(stdout, allowedDirectory);
+  } catch (error) {
+    return res.status(500).json({
+      message: 'Archivo generado inválido',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  if (!resolvedPath) {
+    return res.status(500).json({ message: 'No se generó un archivo válido para descargar' });
+  }
+
+  if (!fs.existsSync(resolvedPath)) {
+    return res.status(500).json({ message: 'El archivo generado no existe', path: path.basename(resolvedPath) });
+  }
+
+  return res.download(resolvedPath, (err) => {
+    if (err && !res.headersSent) {
+      return res.status(500).json({ message: 'Error al descargar el archivo', error: err.message });
+    }
+  });
 };
 
 const parseScriptJson = (stdout = '') => {
@@ -157,23 +206,7 @@ const descarga_ATE = (req, res) => {
         return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: stderr });
       }
 
-      const rawOutput = stdout.trim();
-
-      if (!rawOutput) {
-        return res.status(500).json({ message: 'No se generó un archivo válido para descargar' });
-      }
-
-      // Construir la ruta desde el directorio permitido usando sólo el nombre base
-      // para evitar path traversal o file inclusion desde fuentes externas
-      const allowedDir = path.resolve(__dirname, '../../../');
-      const safeFilename = path.basename(rawOutput);
-      const resolvedPath = path.join(allowedDir, safeFilename);
-
-      res.download(resolvedPath, (err) => {
-        if (err) {
-          return res.status(500).json({ message: 'Error al descargar el archivo', error: err.message });
-        }
-      });
+      return downloadGeneratedReport(res, stdout, reportDirectories.ate);
     });
 
   } catch (error) {
@@ -195,23 +228,7 @@ const descargar_novedad = (req, res) => {
         return res.status(500).json({ message: 'Error al ejecutar el script de Python', error: stderr });
       }
 
-      const rawOutput = stdout.trim();
-
-      if (!rawOutput) {
-        return res.status(500).json({ message: 'No se generó un archivo válido para descargar' });
-      }
-
-      // Construir la ruta desde el directorio permitido usando sólo el nombre base
-      // para evitar path traversal o file inclusion desde fuentes externas
-      const allowedDir = path.resolve(__dirname, '../../../');
-      const safeFilename = path.basename(rawOutput);
-      const resolvedPath = path.join(allowedDir, safeFilename);
-
-      res.download(resolvedPath, (err) => {
-        if (err) {
-          return res.status(500).json({ message: 'Error al descargar el archivo', error: err.message });
-        }
-      });
+      return downloadGeneratedReport(res, stdout, reportDirectories.novedad);
     });
 
   } catch (error) {

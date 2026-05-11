@@ -84,22 +84,29 @@ const obtenerATE = async (req, res) => {
                 estado: { $ne: true },
                 Trabajador: trabajador._id
             }).lean();
-            const resultado = await Promise.all(asignaciones.map(async (asignacion) => {
-                const direccion = await DIRECCION.findById(asignacion.direccion);
-                const medidor = await MEDIDOR.findOne({ _id: { $eq: direccion.NumeroMedidor } });
-                const sector = await SECTOR.findById(direccion.NumeroSector);
-                const tipo = await TipoNovedad.findById(asignacion.tipo);
+            const resultado = (await Promise.all(asignaciones.map(async (asignacion) => {
+                const direccion = await DIRECCION.findById(asignacion.direccion).lean();
+                if (!direccion) {
+                    return null;
+                }
+
+                const [medidor, sector, tipo] = await Promise.all([
+                    direccion.NumeroMedidor ? MEDIDOR.findById(direccion.NumeroMedidor).lean() : Promise.resolve(null),
+                    direccion.NumeroSector ? SECTOR.findById(direccion.NumeroSector).lean() : Promise.resolve(null),
+                    asignacion.tipo ? TipoNovedad.findById(asignacion.tipo).lean() : Promise.resolve(null),
+                ]);
+
                 return {
                     "id_ate": asignacion._id,
                     "lat": direccion.LAT,
                     "lng": direccion.LNG,
                     "direccion": direccion.calle,
-                    "numeroMedidor": medidor.NumeroMedidor,
-                    "sector": (sector.sector).split(" ")[0],
-                    "tipo": tipo.value,
+                    "numeroMedidor": medidor?.NumeroMedidor ?? null,
+                    "sector": sector?.sector ? sector.sector.split(" ")[0] : null,
+                    "tipo": tipo?.value ?? null,
                     "comentario": asignacion.comentario,
                 };
-            }));
+            }))).filter(Boolean);
             res.status(200).send(resultado);
         }
         else {
