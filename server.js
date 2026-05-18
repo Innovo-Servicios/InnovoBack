@@ -21,7 +21,10 @@ const _ = require('lodash');
 const path = require('node:path');
 const axios = require('axios');
 const helmet = require('helmet');
-const {pushNotification,crearNotificacion} = require('./src/controllers/notificaciones.controller.js');
+const {
+  pushNotification,
+  dispatchDueScheduledNotifications,
+} = require('./src/controllers/notificaciones.controller.js');
 const moment = require('moment-timezone');
 const mongoSanitize = require('express-mongo-sanitize');
 const { validartoken } = require('./src/controllers/token.controller.js');
@@ -74,7 +77,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Refresh-Token'],
 };
 
 const isPrivilegedRole = (cargo) =>
@@ -278,6 +281,9 @@ db.mongoose
   .connect(uri)
   .then(() => {
     console.log('Conexión a la base de datos exitosa');
+    dispatchDueScheduledNotifications(io).catch((error) => {
+      logHandledError('Error al despachar notificaciones programadas al iniciar', error);
+    });
   })
   .catch((error) => {
     console.log('Error al conectar a la base de datos');
@@ -530,6 +536,12 @@ io.on('connection', (socket) => {
 });
 
 cron.schedule('* * * * *', async () => {
+  try {
+    await dispatchDueScheduledNotifications(io);
+  } catch (error) {
+    logHandledError('Error al despachar notificaciones programadas', error);
+  }
+
   try {
     const now = new Date();
     const trabajadores = await trabajador_MongooseModel.find({ 'rolTemporal.expiracion': { $lt: now } });

@@ -13,12 +13,16 @@ const {
     tipoDocumento_MongooseModel,
 } = require('../models/tipoDocumento.model.js');
 const { documentos_MongooseModel } = require('../models/documentos.model.js');
+const {
+    notificacion_validacion_MongooseModel,
+} = require('../models/notificacion_validacion.model.js');
 const moment = require('moment-timezone');
 const Dayjs = require('dayjs');
 const fetch = require('node-fetch');
 const path = require('node:path');
 const sharp = require('sharp');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 
 const NOTIFICATION_ALLOWED_FORMATS = new Set([
     'application/pdf',
@@ -35,6 +39,38 @@ const NOTIFICATION_DEFAULT_PAGE_LIMIT = 20;
 const NOTIFICATION_MAX_PAGE_LIMIT = 50;
 const NOTIFICATION_TIMEZONE = 'America/Santiago';
 const NOTIFICATION_CHANNEL_ID = 'default';
+const NOTIFICATION_STATE = Object.freeze({
+    SCHEDULED: 'programada',
+    SENDING: 'enviando',
+    SENT: 'enviado',
+    FAILED: 'fallida',
+});
+const NOTIFICATION_SCHEDULE_MIN_OFFSET_MINUTES = Number.parseInt(
+    process.env.NOTIFICATION_SCHEDULE_MIN_OFFSET_MINUTES || '10',
+    10
+);
+const NOTIFICATION_SCHEDULE_MAX_DAYS = Number.parseInt(
+    process.env.NOTIFICATION_SCHEDULE_MAX_DAYS || '90',
+    10
+);
+const SCHEDULED_NOTIFICATION_BATCH_SIZE = Number.parseInt(
+    process.env.SCHEDULED_NOTIFICATION_BATCH_SIZE || '25',
+    10
+);
+const SCHEDULED_NOTIFICATION_MAX_ATTEMPTS = Number.parseInt(
+    process.env.SCHEDULED_NOTIFICATION_MAX_ATTEMPTS || '3',
+    10
+);
+const NOTIFICATION_CODE_TTL_HOURS = Number.parseInt(
+    process.env.NOTIFICATION_CODE_TTL_HOURS || '12',
+    10
+);
+const NOTIFICATION_CODE_MAX_ATTEMPTS = Number.parseInt(
+    process.env.NOTIFICATION_CODE_MAX_ATTEMPTS || '5',
+    10
+);
+const NOTIFICATION_CODE_SECRET_SELECT = '+codeHash +codeEncrypted +codeIv +codeTag';
+const NOTIFICATION_CODE_DISPLAY_SELECT = '+codeEncrypted +codeIv +codeTag';
 const EXPO_PUSH_RECEIPT_DELAY_MS = Number.parseInt(
     process.env.EXPO_PUSH_RECEIPT_DELAY_MS || '30000',
     10
@@ -53,6 +89,228 @@ const logHandledError = (context, error) => {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`${context}: ${errorMessage}`);
 };
+
+const parseBoolean = (value) =>
+    value === true ||
+    value === 'true' ||
+    value === '1' ||
+    value === 1 ||
+    value === 'on';
+
+const getNotificationCodeSecret = () => {
+    const secret = process.env.NOTIFICATION_CODE_SECRET || process.env.JWT_SECRET;
+    if (!secret) {
+        throw new Error('Falta configurar NOTIFICATION_CODE_SECRET');
+    }
+
+    return secret;
+};
+
+const buildCodeExpiresAt = (baseDate = new Date()) => {
+    const ttlHours = Number.isFinite(NOTIFICATION_CODE_TTL_HOURS)
+        ? NOTIFICATION_CODE_TTL_HOURS
+        : 12;
+    const baseTime = new Date(baseDate).getTime();
+    const safeBaseTime = Number.isNaN(baseTime) ? Date.now() : baseTime;
+    return new Date(safeBaseTime + ttlHours * 60 * 60 * 1000);
+};
+
+const generateSixDigitCode = (usedCodes = new Set()) => {
+    let code;
+    do {
+        code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    } while (usedCodes.has(code));
+
+    usedCodes.add(code);
+    return code;
+};
+
+const hashNotificationCode = ({ notificationId, trabajadorId, code }) =>
+    crypto
+        .createHmac('sha256', getNotificationCodeSecret())
+        .update(`${notificationId}:${trabajadorId}:${code}`)
+        .digest('hex');
+
+const getNotificationCodeEncryptionKey = () =>
+    crypto.createHash('sha256').update(getNotificationCodeSecret()).digest();
+
+const encryptNotificationCode = (code) => {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv(
+        'aes-256-gcm',
+        getNotificationCodeEncryptionKey(),
+        iv
+    );
+    const encrypted = Buffer.concat([
+        cipher.update(String(code), 'utf8'),
+        cipher.final(),
+    ]);
+
+    return {
+        codeEncrypted: encrypted.toString('base64'),
+        codeIv: iv.toString('base64'),
+        codeTag: cipher.getAuthTag().toString('base64'),
+    };
+};
+
+const decryptNotificationCode = (validation) => {
+    if (!validation?.codeEncrypted || !validation?.codeIv || !validation?.codeTag) {
+        return null;
+    }
+
+    try {
+        const decipher = crypto.createDecipheriv(
+            'aes-256-gcm',
+            getNotificationCodeEncryptionKey(),
+            Buffer.from(validation.codeIv, 'base64')
+        );
+        decipher.setAuthTag(Buffer.from(validation.codeTag, 'base64'));
+
+        return Buffer.concat([
+            decipher.update(Buffer.from(validation.codeEncrypted, 'base64')),
+            decipher.final(),
+        ]).toString('utf8');
+    } catch (error) {
+        logHandledError('No se pudo descifrar el código de notificación', error);
+        return null;
+    }
+};
+
+const clearValidationCode = (validation) => {
+    if (!validation) {
+        return;
+    }
+
+    validation.set('codeHash', undefined);
+    validation.set('codeEncrypted', undefined);
+    validation.set('codeIv', undefined);
+    validation.set('codeTag', undefined);
+};
+
+const hashesMatch = (left, right) => {
+    if (!left || !right || left.length !== right.length) {
+        return false;
+    }
+
+    return crypto.timingSafeEqual(Buffer.from(left), Buffer.from(right));
+};
+
+const normalizeValidationCode = (code) =>
+    String(code || '').replace(/\D/g, '').slice(0, 6);
+
+const getEffectiveValidationState = (validation) => {
+    if (!validation) {
+        return null;
+    }
+
+    if (
+        ['pendiente', 'firmado'].includes(validation.estado) &&
+        validation.expiresAt &&
+        new Date(validation.expiresAt).getTime() < Date.now()
+    ) {
+        return 'vencido';
+    }
+
+    return validation.estado;
+};
+
+const expireStaleValidations = async (filter = {}) =>
+    notificacion_validacion_MongooseModel.updateMany(
+        {
+            ...filter,
+            estado: { $in: ['pendiente', 'firmado'] },
+            expiresAt: { $lt: new Date() },
+        },
+        {
+            $set: { estado: 'vencido' },
+            $unset: {
+                codeHash: '',
+                codeEncrypted: '',
+                codeIv: '',
+                codeTag: '',
+            },
+        }
+    );
+
+const formatValidationForClient = (validation, required = false, options = {}) => {
+    if (!validation) {
+        return required
+            ? {
+                required: true,
+                estado: 'pendiente',
+                expiresAt: null,
+                firmadoAt: null,
+                aceptadoAt: null,
+                intentos: 0,
+                attemptsRemaining: NOTIFICATION_CODE_MAX_ATTEMPTS,
+            }
+            : { required: false };
+    }
+
+    const maxIntentos = validation.maxIntentos || NOTIFICATION_CODE_MAX_ATTEMPTS;
+    const intentos = validation.intentos || 0;
+    const estado = getEffectiveValidationState(validation);
+    const shouldIncludeCode = options.includeCode && estado === 'pendiente';
+    const codigo = shouldIncludeCode ? decryptNotificationCode(validation) : null;
+
+    const formattedValidation = {
+        required: true,
+        estado,
+        expiresAt: validation.expiresAt || null,
+        firmadoAt: validation.firmadoAt || null,
+        aceptadoAt: validation.aceptadoAt || null,
+        intentos,
+        attemptsRemaining: Math.max(maxIntentos - intentos, 0),
+    };
+
+    if (options.includeCode) {
+        formattedValidation.codigo = codigo;
+    }
+
+    return formattedValidation;
+};
+
+const getValidationMapForWorker = async (notificaciones, trabajador) => {
+    const notificationIds = notificaciones
+        .filter((notificacion) => notificacion?._id)
+        .map((notificacion) => notificacion._id);
+
+    if (!trabajador?._id || notificationIds.length === 0) {
+        return new Map();
+    }
+
+    await expireStaleValidations({
+        trabajador: trabajador._id,
+        notificacion: { $in: notificationIds },
+    });
+
+    const validations = await notificacion_validacion_MongooseModel.find({
+        trabajador: trabajador._id,
+        notificacion: { $in: notificationIds },
+    }).select(NOTIFICATION_CODE_DISPLAY_SELECT);
+
+    return new Map(
+        validations.map((validation) => [
+            validation.notificacion.toString(),
+            validation,
+        ])
+    );
+};
+
+const getValidationForWorkerAndNotification = async (notificacion, trabajador) => {
+    if (!notificacion?.requiereFirma || !trabajador?._id) {
+        return null;
+    }
+
+    return notificacion_validacion_MongooseModel.findOne({
+        notificacion: notificacion._id,
+        trabajador: trabajador._id,
+    }).select(NOTIFICATION_CODE_DISPLAY_SELECT);
+};
+
+const buildValidationResponse = (validation) => ({
+    validacion: formatValidationForClient(validation, Boolean(validation)),
+});
 
 const buildNotificationDownloadUrl = (notificationId, notificationPath) => {
     const safeFileName = path.basename(String(notificationPath || 'adjunto'));
@@ -98,6 +356,76 @@ const formatNotificationDateForClient = (fecha) => {
 
     return parsedDate.toISOString();
 };
+
+const parseScheduledNotificationDate = (value) => {
+    if (!value) {
+        return null;
+    }
+
+    const rawValue = String(value).trim();
+    const valueWithoutZoneName = rawValue.replace(/\[[^\]]+\]$/, '');
+    const hasExplicitOffset = /(?:z|[+-]\d{2}:?\d{2})$/i.test(valueWithoutZoneName);
+    const parsedDate = hasExplicitOffset
+        ? moment(valueWithoutZoneName)
+        : moment.tz(valueWithoutZoneName, NOTIFICATION_TIMEZONE);
+
+    if (!parsedDate.isValid()) {
+        return null;
+    }
+
+    return parsedDate.toDate();
+};
+
+const buildNotificationSchedule = ({ programada, fechaProgramacion }) => {
+    if (!parseBoolean(programada)) {
+        return {
+            isScheduled: false,
+            scheduledDate: null,
+        };
+    }
+
+    const scheduledDate = parseScheduledNotificationDate(fechaProgramacion);
+    if (!scheduledDate) {
+        const error = new Error('La fecha de programación no es válida');
+        error.statusCode = 400;
+        throw error;
+    }
+
+    const minOffsetMinutes = Number.isFinite(NOTIFICATION_SCHEDULE_MIN_OFFSET_MINUTES)
+        ? NOTIFICATION_SCHEDULE_MIN_OFFSET_MINUTES
+        : 10;
+    const maxScheduleDays = Number.isFinite(NOTIFICATION_SCHEDULE_MAX_DAYS)
+        ? NOTIFICATION_SCHEDULE_MAX_DAYS
+        : 90;
+    const minDate = moment().tz(NOTIFICATION_TIMEZONE).add(minOffsetMinutes, 'minutes').toDate();
+    const maxDate = moment().tz(NOTIFICATION_TIMEZONE).add(maxScheduleDays, 'days').endOf('day').toDate();
+
+    if (scheduledDate.getTime() < minDate.getTime()) {
+        const error = new Error(
+            `La notificación debe programarse al menos ${minOffsetMinutes} minutos hacia adelante`
+        );
+        error.statusCode = 400;
+        throw error;
+    }
+
+    if (scheduledDate.getTime() > maxDate.getTime()) {
+        const error = new Error(
+            `La notificación solo puede programarse hasta ${maxScheduleDays} días hacia adelante`
+        );
+        error.statusCode = 400;
+        throw error;
+    }
+
+    return {
+        isScheduled: true,
+        scheduledDate,
+    };
+};
+
+const getCreatedNotificationMessage = (notificacion) =>
+    notificacion?.estado === NOTIFICATION_STATE.SCHEDULED
+        ? 'Notificación programada correctamente'
+        : 'Notificación creada correctamente';
 
 const sanitizeNotificationForClient = (notificacion) => {
     if (!notificacion) {
@@ -224,6 +552,7 @@ const getNotificationTypeMap = async (notificaciones) => {
 const formatNotificationsForApp = async (notificaciones, trabajador) => {
     const vistasSet = new Set((trabajador.vistas || []).map((id) => id.toString()));
     const tiposMap = await getNotificationTypeMap(notificaciones);
+    const validationMap = await getValidationMapForWorker(notificaciones, trabajador);
 
     return notificaciones.map((notificacion) => ({
         id: notificacion._id.toString(),
@@ -234,11 +563,17 @@ const formatNotificationsForApp = async (notificaciones, trabajador) => {
         fecha: formatNotificationDateForClient(notificacion.fecha),
         url: formatNotificationUrlForClient(notificacion._id, notificacion.url),
         estado: vistasSet.has(notificacion._id.toString()),
+        validacion: formatValidationForClient(
+            validationMap.get(notificacion._id.toString()),
+            Boolean(notificacion.requiereFirma),
+            { includeCode: true }
+        ),
     }));
 };
 
-const formatLiveNotificationForApp = async (notificacion) => {
+const formatLiveNotificationForApp = async (notificacion, trabajador) => {
     const tiposMap = await getNotificationTypeMap([notificacion]);
+    const validation = await getValidationForWorkerAndNotification(notificacion, trabajador);
 
     return {
         id: notificacion._id.toString(),
@@ -249,6 +584,11 @@ const formatLiveNotificationForApp = async (notificacion) => {
         fecha: formatNotificationDateForClient(notificacion.fecha),
         url: formatNotificationUrlForClient(notificacion._id, notificacion.url),
         estado: false,
+        validacion: formatValidationForClient(
+            validation,
+            Boolean(notificacion.requiereFirma),
+            { includeCode: true }
+        ),
     };
 };
 
@@ -270,14 +610,90 @@ const normalizeNotificationTargets = (objetivo) => {
     }
 };
 
-const getTargetWorkers = async (objetivoArray) => {
+const getTargetWorkers = async (objetivoArray, cargoArray = []) => {
     if (objetivoArray[0] === 'all') {
         return trabajador_MongooseModel.find();
     }
 
-    return trabajador_MongooseModel.find({
-        Rut: { $in: objetivoArray },
+    if (objetivoArray.length > 0) {
+        return trabajador_MongooseModel.find({
+            Rut: { $in: objetivoArray },
+        });
+    }
+
+    if (cargoArray.length > 0) {
+        return trabajador_MongooseModel.find({
+            cargo: { $in: cargoArray },
+        });
+    }
+
+    return [];
+};
+
+const createSignatureValidations = async ({
+    nuevaNotificacion,
+    trabajadores,
+    expiresAtBase,
+}) => {
+    if (!nuevaNotificacion.requiereFirma) {
+        return null;
+    }
+
+    const expiresAt = buildCodeExpiresAt(expiresAtBase);
+    const usedCodes = new Set();
+    const codes = trabajadores.map((trabajador) => {
+        const code = generateSixDigitCode(usedCodes);
+        return {
+            trabajador,
+            code,
+            codeHash: hashNotificationCode({
+                notificationId: nuevaNotificacion._id,
+                trabajadorId: trabajador._id,
+                code,
+            }),
+            encryptedCode: encryptNotificationCode(code),
+        };
     });
+
+    await notificacion_validacion_MongooseModel.insertMany(
+        codes.map(({ trabajador, codeHash, encryptedCode }) => ({
+            notificacion: nuevaNotificacion._id,
+            trabajador: trabajador._id,
+            codeHash,
+            ...encryptedCode,
+            expiresAt,
+            estado: 'pendiente',
+            intentos: 0,
+            maxIntentos: Number.isFinite(NOTIFICATION_CODE_MAX_ATTEMPTS)
+                ? NOTIFICATION_CODE_MAX_ATTEMPTS
+                : 5,
+        }))
+    );
+
+    return {
+        notificationId: nuevaNotificacion._id.toString(),
+        expiresAt,
+        codes: codes.map(({ trabajador, code }) => ({
+            trabajadorId: trabajador._id.toString(),
+            rut: trabajador.Rut,
+            nombre: trabajador.Nombre,
+            code,
+        })),
+    };
+};
+
+const buildCreatedNotificationResponse = (nuevaNotificacion, signatureBatch) => {
+    if (!signatureBatch) {
+        return null;
+    }
+
+    return {
+        message: getCreatedNotificationMessage(nuevaNotificacion),
+        notificationId: nuevaNotificacion._id.toString(),
+        requiereFirma: true,
+        expiresAt: signatureBatch.expiresAt,
+        codigos: signatureBatch.codes,
+    };
 };
 
 const buildPushNotificationData = ({
@@ -302,6 +718,10 @@ const createNotificationRecord = ({
     contenido,
     url,
     fecha,
+    requiereFirma,
+    isScheduled,
+    scheduledDate,
+    documentoId,
 }) => new notificaciones_MongooseModel({
     trabajadores: trabajadores.map((trabajador) => trabajador._id),
     tipo: tipoId,
@@ -310,6 +730,12 @@ const createNotificationRecord = ({
     contenido,
     url,
     fecha,
+    documento: documentoId,
+    requiereFirma,
+    programada: Boolean(isScheduled),
+    fechaProgramacion: scheduledDate || undefined,
+    fechaEnvio: isScheduled ? undefined : fecha,
+    estado: isScheduled ? NOTIFICATION_STATE.SCHEDULED : NOTIFICATION_STATE.SENT,
 });
 
 const assignNotificationToWorkers = async ({
@@ -321,8 +747,10 @@ const assignNotificationToWorkers = async ({
     documentoId,
 }) => {
     for (const trabajador of trabajadores) {
-        trabajador.notificaciones.push(nuevaNotificacion.id);
-        if (documentoId) {
+        if (!hasObjectId(trabajador.notificaciones, nuevaNotificacion._id)) {
+            trabajador.notificaciones.push(nuevaNotificacion._id);
+        }
+        if (documentoId && !hasObjectId(trabajador.documentos, documentoId)) {
             trabajador.documentos.push(documentoId);
         }
 
@@ -336,15 +764,26 @@ const assignNotificationToWorkers = async ({
     }
 };
 
+const emitNotificationToWorker = async (io, trabajador, nuevaNotificacion) => {
+    if (!io || !trabajador?.Rut || !nuevaNotificacion) {
+        return;
+    }
+
+    const clientNotification = await formatLiveNotificationForApp(
+        nuevaNotificacion,
+        trabajador
+    );
+    io.to(`worker:${trabajador.Rut}`)
+        .emit('nuevaNotificacion', clientNotification);
+};
+
 const emitNotificationToWorkers = async (io, trabajadores, nuevaNotificacion) => {
     if (!io || !nuevaNotificacion) {
         return;
     }
 
-    const clientNotification = await formatLiveNotificationForApp(nuevaNotificacion);
     for (const trabajador of trabajadores) {
-        io.to(`worker:${trabajador.Rut}`)
-            .emit('nuevaNotificacion', clientNotification);
+        await emitNotificationToWorker(io, trabajador, nuevaNotificacion);
     }
 };
 
@@ -593,8 +1032,9 @@ const obtenerNotificacionesDelUserPaginadas = async (req, res) => {
 };
   
 const crearNotificacion = async (req, res) => {
-    const { objetivo, tipo, titulo, mensaje, contenido, url } = req.body;
-    const token = req.body.token || req.accessToken;
+    const { objetivo, tipo, titulo, mensaje, contenido, url, cargo } = req.body;
+    const requiereFirma = parseBoolean(req.body.requiereFirma);
+    const token = req.accessToken || req.body.token;
     const tokenValido = await Token.validartoken(token);
     if (!tokenValido.valid) {
         return res.status(401).send('Token inválido');
@@ -605,8 +1045,16 @@ const crearNotificacion = async (req, res) => {
     }
 
     const objetivoArray = normalizeNotificationTargets(objetivo);
-    if (objetivoArray.length === 0) {
+    const cargoArray = normalizeNotificationTargets(cargo);
+    if (objetivoArray.length === 0 && cargoArray.length === 0) {
         return res.status(400).send('Falta el objetivo de la notificación');
+    }
+
+    let scheduleConfig;
+    try {
+        scheduleConfig = buildNotificationSchedule(req.body);
+    } catch (error) {
+        return res.status(error.statusCode || 400).send(error.message);
     }
 
     try {
@@ -614,8 +1062,13 @@ const crearNotificacion = async (req, res) => {
         if (!restipo) {
             return res.status(400).send('Tipo de notificación no encontrado');
         }
-        const trabajadores = await getTargetWorkers(objetivoArray);
-        const fechaNotificacion = moment().tz('America/Santiago');
+        const trabajadores = await getTargetWorkers(objetivoArray, cargoArray);
+        if (trabajadores.length === 0) {
+            return res.status(400).send('No se encontraron destinatarios para la notificación');
+        }
+        const fechaNotificacion = scheduleConfig.isScheduled
+            ? scheduleConfig.scheduledDate
+            : moment().tz(NOTIFICATION_TIMEZONE).toDate();
         const nuevaNotificacion = createNotificationRecord({
             trabajadores,
             tipoId: restipo._id,
@@ -624,6 +1077,9 @@ const crearNotificacion = async (req, res) => {
             contenido,
             url,
             fecha: fechaNotificacion,
+            requiereFirma,
+            isScheduled: scheduleConfig.isScheduled,
+            scheduledDate: scheduleConfig.scheduledDate,
         });
         const pushData = buildPushNotificationData({
             contenido,
@@ -633,18 +1089,34 @@ const crearNotificacion = async (req, res) => {
             url,
         });
 
-        await assignNotificationToWorkers({
-            trabajadores,
+        await nuevaNotificacion.save();
+        const signatureBatch = await createSignatureValidations({
             nuevaNotificacion,
-            titulo,
-            mensaje,
-            data: pushData,
+            trabajadores,
+            expiresAtBase: fechaNotificacion,
         });
 
-        await nuevaNotificacion.save();
-        await emitNotificationToWorkers(req.io, trabajadores, nuevaNotificacion);
+        if (!scheduleConfig.isScheduled) {
+            await assignNotificationToWorkers({
+                trabajadores,
+                nuevaNotificacion,
+                titulo,
+                mensaje,
+                data: pushData,
+            });
 
-        return res.status(201).send('Notificación creada correctamente');
+            await emitNotificationToWorkers(req.io, trabajadores, nuevaNotificacion);
+        }
+
+        const createdResponse = buildCreatedNotificationResponse(
+            nuevaNotificacion,
+            signatureBatch
+        );
+        if (createdResponse) {
+            return res.status(201).json(createdResponse);
+        }
+
+        return res.status(201).send(getCreatedNotificationMessage(nuevaNotificacion));
     } catch (error) {
         return res.status(500).send(
             'Error interno del servidor: ' + error.message
@@ -652,8 +1124,9 @@ const crearNotificacion = async (req, res) => {
     }
 };
 const crearNotificacionDocumento = async (req, res) => {
-    const { objetivo, tipo, titulo, mensaje, contenido } = req.body;
-    const token = req.body.token || req.accessToken;
+    const { objetivo, tipo, titulo, mensaje, contenido, cargo } = req.body;
+    const requiereFirma = parseBoolean(req.body.requiereFirma);
+    const token = req.accessToken || req.body.token;
     const tokenValido = await Token.validartoken(token);
     if (!tokenValido.valid) {
         return res.status(401).send('Token inválido');
@@ -664,8 +1137,16 @@ const crearNotificacionDocumento = async (req, res) => {
     }
 
     const objetivoArray = normalizeNotificationTargets(objetivo);
-    if (objetivoArray.length === 0) {
+    const cargoArray = normalizeNotificationTargets(cargo);
+    if (objetivoArray.length === 0 && cargoArray.length === 0) {
         return res.status(400).send('Falta el objetivo de la notificación');
+    }
+
+    let scheduleConfig;
+    try {
+        scheduleConfig = buildNotificationSchedule(req.body);
+    } catch (error) {
+        return res.status(error.statusCode || 400).send(error.message);
     }
 
     try {
@@ -673,20 +1154,25 @@ const crearNotificacionDocumento = async (req, res) => {
         if (!restipo) {
             return res.status(400).send('Tipo de notificación no encontrado');
         }
-        const trabajadores = await getTargetWorkers(objetivoArray);
+        const trabajadores = await getTargetWorkers(objetivoArray, cargoArray);
+        if (trabajadores.length === 0) {
+            return res.status(400).send('No se encontraron destinatarios para la notificación');
+        }
         const archivo = req.file;
         const savedAttachment = await saveNotificationAttachment(archivo);
         if (savedAttachment.error) {
             return res.status(400).send(savedAttachment.error);
         }
 
-        const fechaNotificacion = moment().tz('America/Santiago');
         const resTipodocumento = await tipoDocumento_MongooseModel.findOne({
             value: 'Notificacion',
         });
         if (!resTipodocumento) {
             return res.status(400).send('Tipo de documento no encontrado');
         }
+        const fechaNotificacion = scheduleConfig.isScheduled
+            ? scheduleConfig.scheduledDate
+            : moment().tz(NOTIFICATION_TIMEZONE).toDate();
         const nuevoDocumento = new documentos_MongooseModel({
             _id: new mongoose.Types.ObjectId(),
             tipo: resTipodocumento._id,
@@ -704,6 +1190,10 @@ const crearNotificacionDocumento = async (req, res) => {
             contenido,
             url: savedAttachment.finalPath,
             fecha: fechaNotificacion,
+            requiereFirma,
+            isScheduled: scheduleConfig.isScheduled,
+            scheduledDate: scheduleConfig.scheduledDate,
+            documentoId: nuevoDocumento._id,
         });
         const pushData = buildPushNotificationData({
             contenido,
@@ -713,19 +1203,35 @@ const crearNotificacionDocumento = async (req, res) => {
             url: savedAttachment.finalPath,
         });
 
-        await assignNotificationToWorkers({
-            trabajadores,
+        await nuevaNotificacion.save();
+        const signatureBatch = await createSignatureValidations({
             nuevaNotificacion,
-            titulo,
-            mensaje,
-            data: pushData,
-            documentoId: nuevoDocumento._id,
+            trabajadores,
+            expiresAtBase: fechaNotificacion,
         });
 
-        await nuevaNotificacion.save();
-        await emitNotificationToWorkers(req.io, trabajadores, nuevaNotificacion);
+        if (!scheduleConfig.isScheduled) {
+            await assignNotificationToWorkers({
+                trabajadores,
+                nuevaNotificacion,
+                titulo,
+                mensaje,
+                data: pushData,
+                documentoId: nuevoDocumento._id,
+            });
 
-        return res.status(201).send('Notificación creada correctamente');
+            await emitNotificationToWorkers(req.io, trabajadores, nuevaNotificacion);
+        }
+
+        const createdResponse = buildCreatedNotificationResponse(
+            nuevaNotificacion,
+            signatureBatch
+        );
+        if (createdResponse) {
+            return res.status(201).json(createdResponse);
+        }
+
+        return res.status(201).send(getCreatedNotificationMessage(nuevaNotificacion));
     } catch (error) {
         return res.status(500).send(
             'Error interno del servidor: ' + error.message
@@ -846,6 +1352,11 @@ const buscarNotificacion = async (req, res) => {
                         contenido: notificacion.contenido,
                         url: notificacion.url,
                         fecha: notificacion.fecha,
+                        requiereFirma: Boolean(notificacion.requiereFirma),
+                        programada: Boolean(notificacion.programada),
+                        fechaProgramacion: notificacion.fechaProgramacion,
+                        fechaEnvio: notificacion.fechaEnvio,
+                        estado: notificacion.estado || NOTIFICATION_STATE.SENT,
                     };
                 })
             );
@@ -889,15 +1400,74 @@ const detallesNotificacion = async (req, res) => {
         const vistasMap = new Map(
             vistas.map((vista) => [vista.trabajador.toString(), vista])
         );
+        await expireStaleValidations({
+            notificacion: idNotificacion,
+            trabajador: { $in: assignedWorkerIds },
+        });
+        const validaciones = await notificacion_validacion_MongooseModel.find({
+            notificacion: { $eq: String(idNotificacion) },
+            trabajador: { $in: assignedWorkerIds },
+        });
+        const validacionesMap = new Map(
+            validaciones.map((validacion) => [
+                validacion.trabajador.toString(),
+                validacion,
+            ])
+        );
         const trabajadoresVistos = [];
         const trabajadoresNoVistos = [];
+        const validacionDetalle = {
+            required: Boolean(notificacion.requiereFirma),
+            resumen: {
+                pendientes: 0,
+                firmados: 0,
+                aceptados: 0,
+                vencidos: 0,
+                bloqueados: 0,
+            },
+            pendientes: [],
+            firmados: [],
+            aceptados: [],
+            vencidos: [],
+            bloqueados: [],
+        };
 
         trabajadores.forEach((trabajador) => {
             const vista = vistasMap.get(trabajador._id.toString());
+            const validacion = validacionesMap.get(trabajador._id.toString());
             const item = {
+                trabajadorId: trabajador._id.toString(),
                 rut: trabajador.Rut,
                 nombre: trabajador.Nombre,
             };
+
+            if (notificacion.requiereFirma) {
+                const validationItem = {
+                    ...item,
+                    estado: getEffectiveValidationState(validacion) || 'pendiente',
+                    expiresAt: validacion?.expiresAt || null,
+                    firmadoAt: validacion?.firmadoAt || null,
+                    aceptadoAt: validacion?.aceptadoAt || null,
+                    intentos: validacion?.intentos || 0,
+                };
+
+                if (validationItem.estado === 'firmado') {
+                    validacionDetalle.resumen.firmados += 1;
+                    validacionDetalle.firmados.push(validationItem);
+                } else if (validationItem.estado === 'aceptado') {
+                    validacionDetalle.resumen.aceptados += 1;
+                    validacionDetalle.aceptados.push(validationItem);
+                } else if (validationItem.estado === 'vencido') {
+                    validacionDetalle.resumen.vencidos += 1;
+                    validacionDetalle.vencidos.push(validationItem);
+                } else if (validationItem.estado === 'bloqueado') {
+                    validacionDetalle.resumen.bloqueados += 1;
+                    validacionDetalle.bloqueados.push(validationItem);
+                } else {
+                    validacionDetalle.resumen.pendientes += 1;
+                    validacionDetalle.pendientes.push(validationItem);
+                }
+            }
 
             if (vista) {
                 trabajadoresVistos.push({
@@ -913,9 +1483,246 @@ const detallesNotificacion = async (req, res) => {
         res.status(200).send({
             no_vista: trabajadoresNoVistos,
             vista: trabajadoresVistos,
+            validacion: validacionDetalle,
         });
     } catch (error) {
         res.status(500).send('Error interno del servidor: ' + error.message);
+    }
+};
+
+const getRequestWorker = async (req) => {
+    if (req.authUser?._id) {
+        return req.authUser;
+    }
+
+    const rut = req.auth?.rut || req.body?.rut;
+    if (!rut) {
+        return null;
+    }
+
+    return trabajador_MongooseModel.findOne({ Rut: { $eq: String(rut) } });
+};
+
+const expireValidationIfNeeded = async (validation) => {
+    if (
+        validation &&
+        ['pendiente', 'firmado'].includes(validation.estado) &&
+        validation.expiresAt &&
+        new Date(validation.expiresAt).getTime() < Date.now()
+    ) {
+        validation.estado = 'vencido';
+        clearValidationCode(validation);
+        await validation.save();
+    }
+
+    return validation;
+};
+
+const firmarValidacionNotificacion = async (req, res) => {
+    const idNotificacion = String(req.body.idNotificacion || '').trim();
+    const codigo = normalizeValidationCode(req.body.codigo);
+
+    if (!mongoose.Types.ObjectId.isValid(idNotificacion)) {
+        return res.status(400).send('Notificación inválida');
+    }
+
+    if (!/^\d{6}$/.test(codigo)) {
+        return res.status(400).send('El código debe tener 6 dígitos');
+    }
+
+    try {
+        const trabajador = await getRequestWorker(req);
+        if (!trabajador) {
+            return res.status(404).send('Trabajador no encontrado');
+        }
+
+        const validation = await notificacion_validacion_MongooseModel
+            .findOne({
+                notificacion: { $eq: idNotificacion },
+                trabajador: { $eq: trabajador._id },
+            })
+            .select(NOTIFICATION_CODE_SECRET_SELECT);
+
+        if (!validation) {
+            return res.status(404).send('Validación no encontrada');
+        }
+
+        await expireValidationIfNeeded(validation);
+
+        if (validation.estado === 'aceptado' || validation.estado === 'firmado') {
+            return res.status(200).json(buildValidationResponse(validation));
+        }
+
+        if (validation.estado === 'vencido') {
+            return res.status(410).send('El código de validación venció');
+        }
+
+        if (validation.estado === 'bloqueado') {
+            return res.status(423).send('La validación está bloqueada por intentos fallidos');
+        }
+
+        const expectedHash = hashNotificationCode({
+            notificationId: validation.notificacion,
+            trabajadorId: validation.trabajador,
+            code: codigo,
+        });
+
+        if (!hashesMatch(validation.codeHash, expectedHash)) {
+            validation.intentos = (validation.intentos || 0) + 1;
+            validation.lastAttemptAt = new Date();
+
+            if (validation.intentos >= (validation.maxIntentos || NOTIFICATION_CODE_MAX_ATTEMPTS)) {
+                validation.estado = 'bloqueado';
+                clearValidationCode(validation);
+            }
+
+            await validation.save();
+            return res.status(401).send('Código incorrecto');
+        }
+
+        validation.estado = 'firmado';
+        validation.firmadoAt = new Date();
+        validation.lastAttemptAt = new Date();
+        clearValidationCode(validation);
+        await validation.save();
+
+        return res.status(200).json(buildValidationResponse(validation));
+    } catch (error) {
+        logHandledError('Error al firmar notificación', error);
+        return res.status(500).send('Error interno del servidor');
+    }
+};
+
+const aceptarValidacionNotificacion = async (req, res) => {
+    const idNotificacion = String(req.body.idNotificacion || '').trim();
+
+    if (!mongoose.Types.ObjectId.isValid(idNotificacion)) {
+        return res.status(400).send('Notificación inválida');
+    }
+
+    try {
+        const trabajador = await getRequestWorker(req);
+        if (!trabajador) {
+            return res.status(404).send('Trabajador no encontrado');
+        }
+
+        const validation = await notificacion_validacion_MongooseModel
+            .findOne({
+                notificacion: { $eq: idNotificacion },
+                trabajador: { $eq: trabajador._id },
+            })
+            .select(NOTIFICATION_CODE_SECRET_SELECT);
+
+        if (!validation) {
+            return res.status(404).send('Validación no encontrada');
+        }
+
+        await expireValidationIfNeeded(validation);
+
+        if (validation.estado === 'aceptado') {
+            return res.status(200).json(buildValidationResponse(validation));
+        }
+
+        if (validation.estado === 'pendiente') {
+            return res.status(409).send('Debes firmar antes de aceptar');
+        }
+
+        if (validation.estado === 'vencido') {
+            return res.status(410).send('La validación venció');
+        }
+
+        if (validation.estado === 'bloqueado') {
+            return res.status(423).send('La validación está bloqueada');
+        }
+
+        validation.estado = 'aceptado';
+        validation.aceptadoAt = new Date();
+        clearValidationCode(validation);
+        await validation.save();
+
+        return res.status(200).json(buildValidationResponse(validation));
+    } catch (error) {
+        logHandledError('Error al aceptar notificación', error);
+        return res.status(500).send('Error interno del servidor');
+    }
+};
+
+const regenerarCodigoValidacion = async (req, res) => {
+    const idNotificacion = String(req.body.idNotificacion || '').trim();
+    const trabajadorId = String(req.body.trabajadorId || '').trim();
+    const rut = String(req.body.rut || '').trim();
+
+    if (!mongoose.Types.ObjectId.isValid(idNotificacion)) {
+        return res.status(400).send('Notificación inválida');
+    }
+
+    try {
+        const workerQuery = mongoose.Types.ObjectId.isValid(trabajadorId)
+            ? { _id: { $eq: trabajadorId } }
+            : { Rut: { $eq: rut } };
+        const trabajador = await trabajador_MongooseModel.findOne(workerQuery);
+        if (!trabajador) {
+            return res.status(404).send('Trabajador no encontrado');
+        }
+
+        const validation = await notificacion_validacion_MongooseModel
+            .findOne({
+                notificacion: { $eq: idNotificacion },
+                trabajador: { $eq: trabajador._id },
+            })
+            .select(NOTIFICATION_CODE_SECRET_SELECT);
+
+        if (!validation) {
+            return res.status(404).send('Validación no encontrada');
+        }
+
+        await expireValidationIfNeeded(validation);
+
+        if (['firmado', 'aceptado'].includes(validation.estado)) {
+            return res.status(409).send('No se puede regenerar una validación ya firmada o aceptada');
+        }
+
+        const notificacion = await notificaciones_MongooseModel.findById(idNotificacion);
+        const codeExpiresBase =
+            notificacion?.estado === NOTIFICATION_STATE.SCHEDULED && notificacion?.fechaProgramacion
+                ? notificacion.fechaProgramacion
+                : new Date();
+        const code = generateSixDigitCode();
+        const expiresAt = buildCodeExpiresAt(codeExpiresBase);
+        validation.codeHash = hashNotificationCode({
+            notificationId: validation.notificacion,
+            trabajadorId: validation.trabajador,
+            code,
+        });
+        const encryptedCode = encryptNotificationCode(code);
+        validation.codeEncrypted = encryptedCode.codeEncrypted;
+        validation.codeIv = encryptedCode.codeIv;
+        validation.codeTag = encryptedCode.codeTag;
+        validation.expiresAt = expiresAt;
+        validation.estado = 'pendiente';
+        validation.intentos = 0;
+        validation.lastAttemptAt = undefined;
+        validation.firmadoAt = undefined;
+        validation.aceptadoAt = undefined;
+        validation.regeneradoAt = new Date();
+        await validation.save();
+
+        await emitNotificationToWorker(req.io, trabajador, notificacion);
+
+        return res.status(200).json({
+            message: 'Código regenerado correctamente',
+            notificationId: idNotificacion,
+            expiresAt,
+            codigo: {
+                trabajadorId: trabajador._id.toString(),
+                rut: trabajador.Rut,
+                nombre: trabajador.Nombre,
+                code,
+            },
+        });
+    } catch (error) {
+        logHandledError('Error al regenerar código de validación', error);
+        return res.status(500).send('Error interno del servidor');
     }
 };
 const pushNotification = async ({ userId, titulo, mensaje, data }) => {
@@ -963,6 +1770,104 @@ const pushNotification = async ({ userId, titulo, mensaje, data }) => {
         return null;
     }
 };
+
+const buildPushDataFromNotification = async (notificacion) => {
+    const tipo = await TipoNotificacion.findById(notificacion.tipo);
+
+    return buildPushNotificationData({
+        contenido: notificacion.contenido,
+        notificationId: notificacion._id,
+        tipo: tipo?.value || 'Desconocido',
+        fecha: notificacion.fecha || notificacion.fechaProgramacion || new Date(),
+        url: notificacion.url,
+    });
+};
+
+const deliverNotification = async ({ notificacion, io }) => {
+    const trabajadores = await trabajador_MongooseModel.find({
+        _id: { $in: notificacion.trabajadores || [] },
+    });
+
+    if (trabajadores.length === 0) {
+        throw new Error('No se encontraron destinatarios para la notificación programada');
+    }
+
+    const pushData = await buildPushDataFromNotification(notificacion);
+    await assignNotificationToWorkers({
+        trabajadores,
+        nuevaNotificacion: notificacion,
+        titulo: notificacion.titulo,
+        mensaje: notificacion.mensaje,
+        data: pushData,
+        documentoId: notificacion.documento,
+    });
+    await emitNotificationToWorkers(io, trabajadores, notificacion);
+};
+
+const claimDueScheduledNotification = () =>
+    notificaciones_MongooseModel.findOneAndUpdate(
+        {
+            programada: true,
+            estado: NOTIFICATION_STATE.SCHEDULED,
+            fechaProgramacion: { $lte: new Date() },
+        },
+        {
+            $set: {
+                estado: NOTIFICATION_STATE.SENDING,
+                fechaEnvioIniciado: new Date(),
+            },
+            $unset: {
+                ultimoErrorEnvio: '',
+            },
+            $inc: {
+                intentosEnvio: 1,
+            },
+        },
+        {
+            sort: { fechaProgramacion: 1, _id: 1 },
+            new: true,
+        }
+    );
+
+const dispatchDueScheduledNotifications = async (io) => {
+    const batchSize = Number.isFinite(SCHEDULED_NOTIFICATION_BATCH_SIZE)
+        ? SCHEDULED_NOTIFICATION_BATCH_SIZE
+        : 25;
+    const maxAttempts = Number.isFinite(SCHEDULED_NOTIFICATION_MAX_ATTEMPTS)
+        ? SCHEDULED_NOTIFICATION_MAX_ATTEMPTS
+        : 3;
+    let processed = 0;
+
+    while (processed < batchSize) {
+        const notificacion = await claimDueScheduledNotification();
+        if (!notificacion) {
+            break;
+        }
+
+        try {
+            await deliverNotification({ notificacion, io });
+            notificacion.estado = NOTIFICATION_STATE.SENT;
+            notificacion.fechaEnvio = new Date();
+            await notificacion.save();
+            processed += 1;
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            notificacion.estado = (notificacion.intentosEnvio || 0) >= maxAttempts
+                ? NOTIFICATION_STATE.FAILED
+                : NOTIFICATION_STATE.SCHEDULED;
+            notificacion.ultimoErrorEnvio = errorMessage.slice(0, 500);
+            await notificacion.save();
+            logHandledError(
+                `Error al despachar notificación programada ${notificacion._id}`,
+                error
+            );
+            processed += 1;
+        }
+    }
+
+    return processed;
+};
+
 const pushNotificationOLD = async (req, res) => {
     const { userId, titulo, mensaje, data } = req.body;
 
@@ -1049,9 +1954,13 @@ module.exports = {
     detallesNotificacion,
     infoNotificaciones,
     pushNotification,
+    dispatchDueScheduledNotifications,
     pushNotificationOLD,
     crearNotificacionDocumento,
     obtenerNotificacionesDelUser,
     obtenerNotificacionesDelUserPaginadas,
     descargarNotificacionDocumento,
+    firmarValidacionNotificacion,
+    aceptarValidacionNotificacion,
+    regenerarCodigoValidacion,
 };

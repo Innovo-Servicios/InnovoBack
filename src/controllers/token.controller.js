@@ -5,19 +5,54 @@ const { trabajador_MongooseModel } = require('../models/trabajador.model.js');
 const accessSecret = process.env.JWT_SECRET;
 const refreshSecret = process.env.JWT_REFRESH_SECRET || `${process.env.JWT_SECRET}_refresh`;
 const accessTtl = process.env.ACCESS_TOKEN_TTL || '15m';
+const webAccessTtl = process.env.WEB_ACCESS_TOKEN_TTL || '8h';
 const refreshTtl = process.env.REFRESH_TOKEN_TTL || '30d';
 const refreshCookieName = process.env.REFRESH_COOKIE_NAME || 'innovo_rt';
 const refreshCookiePath = process.env.REFRESH_COOKIE_PATH || '/token';
+const defaultRefreshCookieMaxAge = 30 * 24 * 60 * 60 * 1000;
 
 const createTokenHash = (token) =>
     crypto.createHash('sha256').update(String(token)).digest('hex');
+
+const parseTtlToMs = (ttl, fallbackMs) => {
+    if (typeof ttl === 'number' && Number.isFinite(ttl)) {
+        return ttl * 1000;
+    }
+
+    const normalizedTtl = String(ttl || '').trim().toLowerCase();
+    const match = normalizedTtl.match(/^(\d+)(ms|s|m|h|d)?$/);
+    if (!match) {
+        return fallbackMs;
+    }
+
+    const amount = Number(match[1]);
+    const unit = match[2] || 's';
+    const multipliers = {
+        ms: 1,
+        s: 1000,
+        m: 60 * 1000,
+        h: 60 * 60 * 1000,
+        d: 24 * 60 * 60 * 1000,
+    };
+
+    return amount * multipliers[unit];
+};
+
+const isWebDeviceId = (deviceId) =>
+    String(deviceId || '').trim().toLowerCase().startsWith('web-');
+
+const getAccessTokenTtl = (deviceId) =>
+    isWebDeviceId(deviceId) ? webAccessTtl : accessTtl;
+
+const getRefreshCookieMaxAge = () =>
+    parseTtlToMs(refreshTtl, defaultRefreshCookieMaxAge);
 
 const getCookieOptions = () => ({
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: refreshCookiePath,
-    maxAge: 30 * 24 * 60 * 60 * 1000,
+    maxAge: getRefreshCookieMaxAge(),
 });
 
 const normalizeObjectId = (value) => {
@@ -46,7 +81,9 @@ const buildRefreshTokenPayload = (user, deviceId) => ({
 });
 
 const signAccessToken = (user, deviceId) =>
-    jwt.sign(buildAccessTokenPayload(user, deviceId), accessSecret, { expiresIn: accessTtl });
+    jwt.sign(buildAccessTokenPayload(user, deviceId), accessSecret, {
+        expiresIn: getAccessTokenTtl(deviceId),
+    });
 
 const signRefreshToken = (user, deviceId) =>
     jwt.sign(buildRefreshTokenPayload(user, deviceId), refreshSecret, { expiresIn: refreshTtl });

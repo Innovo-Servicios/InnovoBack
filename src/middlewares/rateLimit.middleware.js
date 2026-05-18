@@ -26,8 +26,17 @@ const uploadLimiter = rateLimit({
     message: { message: 'Demasiadas cargas de archivos, intenta nuevamente más tarde' },
 });
 
+const notificationValidationLimiter = rateLimit({
+    windowMs: FIFTEEN_MINUTES_MS,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: 'Demasiados intentos de validación, intenta nuevamente más tarde' },
+});
+
 module.exports = {
     authLimiter,
     tokenLimiter,
     uploadLimiter,
+    notificationValidationLimiter,
 };

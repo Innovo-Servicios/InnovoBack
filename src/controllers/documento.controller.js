@@ -102,7 +102,8 @@ const sanitizeDocument = (documento) => {
 };
 
 const crearDocumento = async (req, res) => {
-    const { token, tipo, objetivo } = req.body;
+    const { tipo, objetivo } = req.body;
+    const token = req.accessToken || req.body.token;
     // console.log(req.body);
     const tokenValido = await Token.validartoken(token);
     if (!tokenValido.valid) {

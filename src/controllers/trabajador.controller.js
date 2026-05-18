@@ -210,7 +210,7 @@ const login = async (req, res) => {
 
         const sessionTokens = await Token.issueSessionTokens(
             usuarioExistente,
-            ID || usuarioExistente.ID || undefined
+            ID || undefined
         );
 
         Token.setRefreshTokenCookie(res, sessionTokens.refreshToken);

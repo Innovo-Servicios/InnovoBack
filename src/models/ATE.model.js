@@ -24,9 +24,10 @@ const ate = new mongoose.Schema({
     fotografia:{type: mongoose.Schema.Types.ObjectId},
     estado:{type: Boolean, default: false},
     respuesta:{type: Date, required: false},
+    respuestaComentario:{type: String, required: false},
+    Lecturacorrecta:{type: Number, required: false, default: null},
 });
 
 const ate_MongooseModel = mongoose.model('ATE',ate);
 
 module.exports = {ate_MongooseModel};
-

@@ -15,8 +15,28 @@ const fs = require('fs');
 const sharp = require('sharp');
 const moment = require('moment-timezone');
 const { tipoDocumento_MongooseModel } = require('../models/tipoDocumento.model.js');
+
+const normalizeAteType = (value) =>
+    String(value || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .toLowerCase();
+
+const isAteLecturaType = (value) =>
+    normalizeAteType(value) === normalizeAteType('Atención Especial-Lectura');
+
+const parseLecturaCorrecta = (value) => {
+    if (value === undefined || value === null || String(value).trim() === '') {
+        return null;
+    }
+
+    const lectura = Number(value);
+    return Number.isFinite(lectura) ? lectura : Number.NaN;
+};
+
 const asignacionATE = async (req, res) => {
-    const { token } = req.body;
+    const token = req.accessToken || req.body.token;
     const tokenValido = await Token.validartoken(token);
     if (tokenValido.valid) {
         try {
@@ -63,7 +83,7 @@ const asignacionATE = async (req, res) => {
 };
 const obtenerATE = async (req, res) => {
     try {
-        const { token } = req.body;
+        const token = req.accessToken || req.body.token;
         const tokenValido = await Token.validartoken(token);
         if (tokenValido.valid) {
             const { fecha } = req.body;
@@ -119,15 +139,15 @@ const obtenerATE = async (req, res) => {
 }
 const obtenerATE_Adm = async (req, res) => {
     try {
-        const { token } = req.body;
+        const token = req.accessToken || req.body.token;
         const tokenValido = await Token.validartoken(token);
         if (!tokenValido.valid) {
             return res.status(401).send('Token inválido');
         }
         let ates;
         if (req.body.fecha) {
-            const fechainicio = dayjs(req.body.fecha.inicio).startOf('day').subtract(3,'hours').toDate();
-            const fechafin = dayjs(req.body.fecha.fin).endOf('day').toDate();
+            const fechainicio = moment.utc(req.body.fecha.inicio).startOf('day').toDate();
+            const fechafin = moment.utc(req.body.fecha.fin).endOf('day').toDate();
             console.log('Fechas:', fechainicio, fechafin);
             ates = await ate_MongooseModel.find({
                 fecha_ate: {
@@ -140,7 +160,7 @@ const obtenerATE_Adm = async (req, res) => {
         }
         // Obtén todas las ATES y ordénalas directamente en la consulta
         if (!ates.length) {
-            return res.status(404).send('No se encontraron ATES.');
+            return res.status(200).send({ ate: [] });
         }
 
         const ateData = await Promise.all(ates.map(async (asignacion) => {
@@ -156,10 +176,12 @@ const obtenerATE_Adm = async (req, res) => {
                 id: asignacion._id,
                 comentario: asignacion.comentario,
                 tipo: tipo ? { _id: tipo._id, nombre: tipo.value } : null,
-                direccion: direccion ? { _id: direccion._id, nombre: direccion.calle } : null,
+                direccion: direccion ? { _id: direccion._id, nombre: direccion.calle, lat: direccion.LAT, lng: direccion.LNG } : null,
                 Trabajador: trabajador ? { _id: trabajador._id, nombre: trabajador.Nombre } : null,
                 fecha_ate: moment(asignacion.fecha_ate),
                 estado: asignacion.estado,
+                respuestaComentario: asignacion.respuestaComentario || null,
+                Lecturacorrecta: asignacion.Lecturacorrecta ?? null,
                 ...(asignacion.fotografia && foto ? { fotografia: `IMG_ATES/${foto.url.split('/').pop()}` } : {})
             };
         }));
@@ -173,7 +195,8 @@ const obtenerATE_Adm = async (req, res) => {
     }
 }
 const repsuestaATE = async (req, res) => {
-    const { token, id_ate, tipo } = req.body;
+    const { id_ate, tipo } = req.body;
+    const token = req.accessToken || req.body.token;
     const tokenValido = await Token.validartoken(token);
     try {
         if (!tokenValido.valid) {
@@ -211,6 +234,13 @@ const repsuestaATE = async (req, res) => {
         const ate = await ate_MongooseModel.findById(id_ate);
         if (!ate) {
             return res.status(404).send('ATE no encontrada');
+        }
+
+        const tipoAte = await TipoNovedad.findById(ate.tipo).lean();
+        const isAteLectura = isAteLecturaType(tipoAte?.value || tipo);
+        const lecturaCorrecta = parseLecturaCorrecta(req.body.Lecturacorrecta);
+        if (isAteLectura && Number.isNaN(lecturaCorrecta)) {
+            return res.status(400).send('Lectura correcta inválida');
         }
 
         const direccion = await DIRECCION.findById(ate.direccion);
@@ -267,7 +297,9 @@ const repsuestaATE = async (req, res) => {
         // Asociar el documento a la ate
         ate.fotografia = nuevoDocumento._id;
         ate.estado = true;
-        ate.respuesta = moment().tz('America/Santiago');    
+        ate.respuesta = moment().tz('America/Santiago');
+        if (req.body.comentario) ate.respuestaComentario = req.body.comentario;
+        ate.Lecturacorrecta = isAteLectura ? lecturaCorrecta : null;
         await ate.save();
         req.io.emit('nuevaAte', {});
         res.status(201).send('Documento creado correctamente');
@@ -281,7 +313,8 @@ const repsuestaATE = async (req, res) => {
 
 
 const editarATE = async (req, res) => {
-    const { token, id_ate, Trabajador } = req.body;
+    const { id_ate, Trabajador } = req.body;
+    const token = req.accessToken || req.body.token;
     const tokenValido = await Token.validartoken(token);
     if (!tokenValido.valid) return res.status(401).send('Token inválido');
     try {
