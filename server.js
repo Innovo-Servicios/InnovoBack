@@ -127,7 +127,7 @@ const apiDebugLogger = (req, res, next) => {
   const startedAt = Date.now();
   console.log('[API ->]', {
     method: req.method,
-    path: req.originalUrl,
+    path: req.path,
     ip: req.ip,
     body: redactSensitiveData(req.body),
     query: redactSensitiveData(req.query),
@@ -136,7 +136,7 @@ const apiDebugLogger = (req, res, next) => {
   res.on('finish', () => {
     console.log('[API <-]', {
       method: req.method,
-      path: req.originalUrl,
+      path: req.path,
       status: res.statusCode,
       durationMs: Date.now() - startedAt,
     });
@@ -301,10 +301,6 @@ app.use((req, res, next) => {
   req.io = io;
   next();
 });
-app.use('/IMG_ATES', express.static(path.join(__dirname, './public/images/ates')));
-app.use('/IMG_NOVEDADES', express.static(path.join(__dirname, './public/images/novedades')));
-app.use('/IMG_PERFILES', express.static(path.join(__dirname, './public/images/perfiles')));
-app.use('/IMG_VERIFICACIONES', express.static(path.join(__dirname, './public/images/verificaciones')));
 // Cargar las rutas
 require('./src/routes/main.routes.js')(app);
 
@@ -367,9 +363,7 @@ const enviarNotificacion = (titulo, cuerpo, data = {}) => {
 
 io.use(async (socket, next) => {
   try {
-    const token =
-      socket.handshake.auth?.token ||
-      socket.handshake.query?.token;
+    const token = socket.handshake.auth?.token;
 
     if (!token || typeof token !== 'string') {
       return next(new Error('No autorizado'));
@@ -385,7 +379,6 @@ io.use(async (socket, next) => {
       rut: tokenValido.user.Rut,
       nombre: tokenValido.user.Nombre,
       cargo: tokenValido.user.cargo,
-      token,
     };
 
     return next();

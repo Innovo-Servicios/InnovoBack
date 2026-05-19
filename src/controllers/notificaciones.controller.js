@@ -35,6 +35,7 @@ const NOTIFICATION_IMAGE_FORMATS = new Set([
     'image/png',
     'image/jpg',
 ]);
+const NOTIFICATION_IMAGE_OUTPUT_MIME_TYPE = 'image/jpeg';
 const NOTIFICATION_DEFAULT_PAGE_LIMIT = 20;
 const NOTIFICATION_MAX_PAGE_LIMIT = 50;
 const NOTIFICATION_TIMEZONE = 'America/Santiago';
@@ -549,10 +550,66 @@ const getNotificationTypeMap = async (notificaciones) => {
     }, {});
 };
 
+const isNotificationImageMimeType = (mimeType) =>
+    String(mimeType || '').toLowerCase().startsWith('image/');
+
+const getNotificationAttachmentMimeType = (mimeType, filePath) => {
+    const extension = path.extname(String(filePath || '')).toLowerCase();
+    if (extension === '.jpg' || extension === '.jpeg') {
+        return 'image/jpeg';
+    }
+    if (extension === '.png') {
+        return 'image/png';
+    }
+
+    return mimeType || null;
+};
+
+const getNotificationDocumentId = (notificacion) =>
+    notificacion?.documento?._id || notificacion?.documento || null;
+
+const getNotificationDocumentMap = async (notificaciones) => {
+    const documentIds = [
+        ...new Set(
+            notificaciones
+                .map(getNotificationDocumentId)
+                .filter(Boolean)
+                .map((id) => id.toString())
+        ),
+    ];
+
+    if (documentIds.length === 0) {
+        return new Map();
+    }
+
+    const documentos = await documentos_MongooseModel
+        .find({ _id: { $in: documentIds } })
+        .select('formato');
+
+    return new Map(
+        documentos.map((documento) => [documento._id.toString(), documento])
+    );
+};
+
+const getNotificationAttachmentMeta = (notificacion, documentMap = new Map()) => {
+    const documentId = getNotificationDocumentId(notificacion);
+    const documento = documentId ? documentMap.get(documentId.toString()) : null;
+    const archivoMimeType = getNotificationAttachmentMimeType(
+        documento?.formato,
+        notificacion?.url
+    );
+
+    return {
+        archivoMimeType,
+        archivoEsImagen: isNotificationImageMimeType(archivoMimeType),
+    };
+};
+
 const formatNotificationsForApp = async (notificaciones, trabajador) => {
     const vistasSet = new Set((trabajador.vistas || []).map((id) => id.toString()));
     const tiposMap = await getNotificationTypeMap(notificaciones);
     const validationMap = await getValidationMapForWorker(notificaciones, trabajador);
+    const documentMap = await getNotificationDocumentMap(notificaciones);
 
     return notificaciones.map((notificacion) => ({
         id: notificacion._id.toString(),
@@ -563,6 +620,7 @@ const formatNotificationsForApp = async (notificaciones, trabajador) => {
         fecha: formatNotificationDateForClient(notificacion.fecha),
         url: formatNotificationUrlForClient(notificacion._id, notificacion.url),
         estado: vistasSet.has(notificacion._id.toString()),
+        ...getNotificationAttachmentMeta(notificacion, documentMap),
         validacion: formatValidationForClient(
             validationMap.get(notificacion._id.toString()),
             Boolean(notificacion.requiereFirma),
@@ -574,6 +632,7 @@ const formatNotificationsForApp = async (notificaciones, trabajador) => {
 const formatLiveNotificationForApp = async (notificacion, trabajador) => {
     const tiposMap = await getNotificationTypeMap([notificacion]);
     const validation = await getValidationForWorkerAndNotification(notificacion, trabajador);
+    const documentMap = await getNotificationDocumentMap([notificacion]);
 
     return {
         id: notificacion._id.toString(),
@@ -584,6 +643,7 @@ const formatLiveNotificationForApp = async (notificacion, trabajador) => {
         fecha: formatNotificationDateForClient(notificacion.fecha),
         url: formatNotificationUrlForClient(notificacion._id, notificacion.url),
         estado: false,
+        ...getNotificationAttachmentMeta(notificacion, documentMap),
         validacion: formatValidationForClient(
             validation,
             Boolean(notificacion.requiereFirma),
@@ -702,12 +762,15 @@ const buildPushNotificationData = ({
     tipo,
     fecha,
     url,
+    archivoMimeType = null,
 }) => ({
     contenidos: contenido,
     idNotificacion: notificationId?.toString(),
     tipo,
     fecha: formatNotificationDateForClient(fecha),
     url: formatNotificationUrlForClient(notificationId, url),
+    archivoMimeType,
+    archivoEsImagen: isNotificationImageMimeType(archivoMimeType),
 });
 
 const createNotificationRecord = ({
@@ -820,12 +883,12 @@ const saveNotificationAttachment = async (archivo) => {
             .toFormat('jpeg', { quality: 80 })
             .toFile(finalPath);
 
-        return { finalPath };
+        return { finalPath, mimeType: NOTIFICATION_IMAGE_OUTPUT_MIME_TYPE };
     }
 
     const finalPath = path.join(uploadPath, fileName);
     fs.writeFileSync(finalPath, archivo.buffer);
-    return { finalPath };
+    return { finalPath, mimeType: archivo.mimetype };
 };
 
 const sendExpoPushNotification = async ({ tokenPush, titulo, mensaje, data }) => {
@@ -919,9 +982,7 @@ const obtenerNotificaciones = async (req, res) => {
             });
             res.send(notificaciones.map((notificacion) => sanitizeNotificationForClient(notificacion)));
         } catch (error) {
-            res.status(500).send(
-                'Error interno del servidor: ' + error.message
-            );
+            res.status(500).send('Error interno del servidor');
         }
     }
 };
@@ -952,7 +1013,7 @@ const obtenerNotificacionesDelUser = async (req, res) => {
   
       return res.send(notificacionesConTipo);
     } catch (error) {
-      return res.status(500).send("Error interno del servidor: " + error.message);
+      return res.status(500).send('Error interno del servidor');
     }
   };
 
@@ -1027,7 +1088,7 @@ const obtenerNotificacionesDelUserPaginadas = async (req, res) => {
             totalLoaded: items.length,
         });
     } catch (error) {
-        return res.status(500).send(`Error interno del servidor: ${error.message}`);
+        return res.status(500).send('Error interno del servidor');
     }
 };
   
@@ -1118,9 +1179,7 @@ const crearNotificacion = async (req, res) => {
 
         return res.status(201).send(getCreatedNotificationMessage(nuevaNotificacion));
     } catch (error) {
-        return res.status(500).send(
-            'Error interno del servidor: ' + error.message
-        );
+        return res.status(500).send('Error interno del servidor');
     }
 };
 const crearNotificacionDocumento = async (req, res) => {
@@ -1177,7 +1236,7 @@ const crearNotificacionDocumento = async (req, res) => {
             _id: new mongoose.Types.ObjectId(),
             tipo: resTipodocumento._id,
             url: savedAttachment.finalPath,
-            formato: archivo.mimetype,
+            formato: savedAttachment.mimeType || archivo.mimetype,
             fecha: fechaNotificacion,
         });
         await nuevoDocumento.save();
@@ -1201,6 +1260,7 @@ const crearNotificacionDocumento = async (req, res) => {
             tipo: restipo.value,
             fecha: fechaNotificacion,
             url: savedAttachment.finalPath,
+            archivoMimeType: savedAttachment.mimeType || archivo.mimetype,
         });
 
         await nuevaNotificacion.save();
@@ -1233,9 +1293,7 @@ const crearNotificacionDocumento = async (req, res) => {
 
         return res.status(201).send(getCreatedNotificationMessage(nuevaNotificacion));
     } catch (error) {
-        return res.status(500).send(
-            'Error interno del servidor: ' + error.message
-        );
+        return res.status(500).send('Error interno del servidor');
     }
 };
 const eliminarNotificacion = async (req, res) => {
@@ -1300,9 +1358,7 @@ const eliminarNotificacion = async (req, res) => {
         await trabajador.save();
         return res.status(200).send('Notificación eliminada correctamente');
     } catch (error) {
-        return res.status(500).send(
-            'Error interno del servidor: ' + error.message
-        );
+        return res.status(500).send('Error interno del servidor');
     }
 };
 const infoNotificaciones = async (req, res) => {
@@ -1320,9 +1376,7 @@ const infoNotificaciones = async (req, res) => {
                 tipoNotificacion: tipoNotificacione,
             });
         } catch (error) {
-            res.status(500).send(
-                'Error interno del servidor: ' + error.message
-            );
+            res.status(500).send('Error interno del servidor');
         }
     }
 };
@@ -1364,9 +1418,7 @@ const buscarNotificacion = async (req, res) => {
             notificacionesConTipo.sort((a, b) => b.fecha - a.fecha);
             res.status(200).send(notificacionesConTipo);
         } catch (error) {
-            res.status(500).send(
-                'Error interno del servidor: ' + error.message
-            );
+            res.status(500).send('Error interno del servidor');
         }
     } else {
         res.status(401).send('Token inválido');
@@ -1486,7 +1538,7 @@ const detallesNotificacion = async (req, res) => {
             validacion: validacionDetalle,
         });
     } catch (error) {
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        res.status(500).send('Error interno del servidor');
     }
 };
 
@@ -1773,6 +1825,8 @@ const pushNotification = async ({ userId, titulo, mensaje, data }) => {
 
 const buildPushDataFromNotification = async (notificacion) => {
     const tipo = await TipoNotificacion.findById(notificacion.tipo);
+    const documentMap = await getNotificationDocumentMap([notificacion]);
+    const attachmentMeta = getNotificationAttachmentMeta(notificacion, documentMap);
 
     return buildPushNotificationData({
         contenido: notificacion.contenido,
@@ -1780,6 +1834,7 @@ const buildPushDataFromNotification = async (notificacion) => {
         tipo: tipo?.value || 'Desconocido',
         fecha: notificacion.fecha || notificacion.fechaProgramacion || new Date(),
         url: notificacion.url,
+        archivoMimeType: attachmentMeta.archivoMimeType,
     });
 };
 
@@ -1937,6 +1992,23 @@ const descargarNotificacionDocumento = async (req, res) => {
         const uploadPath = resolveNotificationAttachmentPath(notificacion.url);
         if (!uploadPath) {
             return res.status(404).send('Documento no encontrado');
+        }
+
+        const documento = notificacion.documento
+            ? await documentos_MongooseModel.findById(notificacion.documento).select('formato')
+            : null;
+        const mimeType = getNotificationAttachmentMimeType(
+            documento?.formato,
+            uploadPath
+        ) || 'application/octet-stream';
+        if (isNotificationImageMimeType(mimeType)) {
+            const inlineFileName = safeFileName.replace(/["\r\n]/g, '_');
+            return res.sendFile(uploadPath, {
+                headers: {
+                    'Content-Type': mimeType,
+                    'Content-Disposition': `inline; filename="${inlineFileName}"`,
+                },
+            });
         }
 
         return res.download(uploadPath, safeFileName);

@@ -45,7 +45,7 @@ const crearlectura = async (req, res) => {
             res.status(201).send('Lerctura registrada correctamente');
         }catch (error) {
             // console.error('Error al registrar lectura:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }else {
         res.status(401).send('Token inválido');
@@ -84,7 +84,7 @@ const obtenerlectura = async (req, res) => {
             }); 
         } catch (error) {
             // console.error('Error al obtener la lectura:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     } else {
         res.status(401).send('Token inválido');

@@ -27,7 +27,7 @@ const agregarmedidor= async (req, res) => {
             res.status(201).send('Medidro registrado correctamente');
         }catch (error) {
             // console.error('Error al registrar medidor:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }else {
         res.status(401).send('Token inválido');

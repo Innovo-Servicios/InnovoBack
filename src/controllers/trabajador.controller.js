@@ -15,6 +15,13 @@ const {Region} = require('../models/region.model.js');
 const sharp = require('sharp');
 const path = require('path');
 const fs = require('fs');
+const {
+    canAccessRut,
+    getAuthRut,
+    isPrivilegedRequest,
+    sanitizeDocumentForClient,
+    sanitizeWorkerForClient,
+} = require('../utils/security.js');
 
 const workerSchema = z.object({
     rut: z.string().trim().min(1),
@@ -38,20 +45,13 @@ const hashPassword = async (plainPassword) => bcrypt.hash(plainPassword, 12);
 const sharedConnectedWorkers = global.usuariosConectados || {};
 
 const listarTrabajadores = async (req, res) => {
-    const {  token } = req.body;
-    const tokenValido = await Token.validartoken(token);
-    if (tokenValido.valid) {
-        try {
-            const trabajadores = await TrabajadorModel.find().select('-clave -refreshTokens -sessionVersion -tokenPush -ID');
-            res.status(200).send(trabajadores);
-        }
-
-        catch (error) {
-            // console.error('Error al obtener trabajadores:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
-        }
-    } else {
-        res.status(401).send('Token inválido');
+    try {
+        const trabajadores = await TrabajadorModel.find()
+            .select('-clave -refreshTokens -sessionVersion -tokenPush -ID -lastUbication');
+        return res.status(200).send(trabajadores.map((worker) => sanitizeWorkerForClient(worker)));
+    } catch (error) {
+        console.error('Error al obtener trabajadores:', error.message);
+        return res.status(500).send('Error interno del servidor');
     }
 };
 const listarTrabajadoresConectados = (req, res) => {
@@ -68,7 +68,6 @@ const creartrabajador = async (req, res) => {
     }
 
     const { rut, nombre, cargo, correo, clave } = parsedWorker.data;
-    console.log(rut,nombre,cargo,correo,clave)
     try {
         const trabajadorExistente = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) }, Nombre: { $eq: String(nombre) } });
         if (trabajadorExistente) {
@@ -85,6 +84,9 @@ const creartrabajador = async (req, res) => {
             return res.status(405).send('El correo no es valido');
         }
         const rol = await Rol.findOne({ nombre: { $eq: String(cargo) } });
+        if (!rol) {
+            return res.status(400).send('Rol no encontrado');
+        }
         const passwordHash = await hashPassword(clave);
         const nvotrabajador = new TrabajadorModel({
             Rut: rut,
@@ -104,14 +106,13 @@ const creartrabajador = async (req, res) => {
         });
         return res.status(201).send('Trabajador registrado correctamente');
     } catch (error) {
-        // console.error('Error al registrar Trabajador:', error);
-        return res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al registrar Trabajador:', error.message);
+        return res.status(500).send('Error interno del servidor');
     }
 };
 const modificardatostrabajador = async (req, res) => {
-    const {  token, rut} = req.body;
-    const tokenValido = await Token.validartoken(token,res);
-    if (tokenValido.valid){ 
+    const { rut} = req.body;
+    if (req.authUser){ 
         const { Nuevonombre, Nuevocargo, Nuevocorreo, Nuevaclave } = req.body;
         try {
             // Buscar el trabajador por Rut
@@ -128,17 +129,15 @@ const modificardatostrabajador = async (req, res) => {
             req.io.emit('updateWorker');
             return res.status(201).send('Datos trabajador modificados correctamente');
         } catch (error) {
-            // console.error('Error al modificar datos:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            console.error('Error al modificar datos trabajador:', error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }else {
         res.status(401).send('Token inválido');
     }
 };
 const eliminartrabajador = async (req, res) => {
-    const { token} = req.body;
-    const tokenValido = await Token.validartoken(token);
-    if (tokenValido.valid){ 
+    if (req.authUser){ 
         try {
             const { rut } = req.body;
             const trabajadorExistente = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) } });
@@ -152,8 +151,8 @@ const eliminartrabajador = async (req, res) => {
                 }
             }
         }catch (error) {
-            // console.error('Error al eliminar trabajador:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            console.error('Error al eliminar trabajador:', error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }else {
         res.status(401).send('Token inválido');
@@ -166,7 +165,6 @@ const login = async (req, res) => {
     }
 
     const { rut, clave, ID, tokenPush } = parsedLogin.data;
-    console.log("🚀 ~ login ~ rut:", rut)
     
     try {
         const usuarioExistente = await TrabajadorModel.findOne({
@@ -222,17 +220,13 @@ const login = async (req, res) => {
             deviceId: sessionTokens.deviceId,
         });
     } catch (error) {
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error en login:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
 };
 const updatePushToken = async (req, res) => {
-    const { token, tokenPush } = req.body;
-    // console.log('Actualizando token push:', token, tokenPush);
-    const tokenValido = await Token.validartoken(token);
-    if (!tokenValido.valid) {
-        return res.status(401).send('Token inválido');
-    }
-    const { rut } = tokenValido.token;
+    const { tokenPush } = req.body;
+    const rut = getAuthRut(req);
     try {
         const trabajador = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) } });
         if (!trabajador) {
@@ -248,17 +242,15 @@ const updatePushToken = async (req, res) => {
             }
         }
     } catch (error) {
-        // console.error('Error al actualizar token push:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al actualizar token push:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
 }
 const obtenerTrabajador = async (req, res) => {
-    const { rut, token } = req.body;
+    const { rut } = req.body;
     try {
-        // Validar el token
-        const tokenValido = await Token.validartoken(token);
-        if (!tokenValido.valid) {
-            return res.status(401).send('Token inválido');
+        if (!canAccessRut(req, rut)) {
+            return res.status(403).send('Permisos insuficientes');
         }
 
         // Buscar al trabajador por su RUT y poblar las notificaciones
@@ -287,19 +279,17 @@ const obtenerTrabajador = async (req, res) => {
             return res.status(404).send('Trabajador no encontrado');
         }
 
-        res.send(trabajador);
+        res.send(sanitizeWorkerForClient(trabajador, { includeNotificationRefs: true }));
     } catch (error) {
-        // console.error('Error al obtener trabajador:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al obtener trabajador:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
 };
 const datosTrabajador = async (req, res) => {
-    const {token , rut} = req.body;
+    const { rut } = req.body;
     try {
-        // Validar el token
-        const tokenValido = await Token.validartoken(token);
-        if (!tokenValido.valid) {
-            return res.status(401).send('Token inválido');
+        if (!canAccessRut(req, rut)) {
+            return res.status(403).send('Permisos insuficientes');
         }
         let trabajador = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) } }).populate({
             path: 'documentos',
@@ -314,16 +304,18 @@ const datosTrabajador = async (req, res) => {
             model:"Rol",
             select:"_id nombre"
         });
+        if (!trabajador) {
+            return res.status(404).send('Trabajador no encontrado');
+        }
 
-        trabajador.vistas.forEach(vista => {
+        trabajador.vistas?.forEach(vista => {
             trabajador.notificaciones.push(vista);
         });
         trabajador = trabajador.toObject();
-        delete trabajador.clave;
-        delete trabajador.vistas;
 
         const notificaciones= await Promise.all(trabajador.notificaciones.map(async notificacion => {
             const notificacionDB = await notificaciones_MongooseModel.findById(notificacion);   
+            if (!notificacionDB) return null;
             const vistaDB= await notificacion_vista_MongooseModel.findOne({ trabajador: { $eq: trabajador._id }, notificacion: { $eq: String(notificacion) } });
             const tiponoti= await TipoNotificacion.findById(notificacionDB.tipo);
             const modelo = {
@@ -337,27 +329,21 @@ const datosTrabajador = async (req, res) => {
             };      
 
             return modelo;
-        }));
+        })).then((items) => items.filter(Boolean));
         trabajador.novedades = await Novedad.find({emisor: trabajador._id}).populate('TipoNovedad').populate('direccion');
         trabajador.notificaciones = notificaciones;
-        if (!trabajador) {
-            return res.status(404).send('Trabajador no encontrado');
-        }
-        res.send(trabajador);
+        res.send(sanitizeWorkerForClient(trabajador, {
+            includeNotificationRefs: true,
+            includeLastUbication: isPrivilegedRequest(req),
+        }));
     } catch (error) {
-        // console.error('Error al obtener trabajador:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al obtener datos trabajador:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
 }
 const datosApp = async (req, res) => {
-    const {token} = req.body;
     try {
-        // Validar el token
-        const tokenValido = await Token.validartoken(token);
-        if (!tokenValido.valid) {
-            return res.status(401).send('Token inválido');
-        }
-        let trabajador = await TrabajadorModel.findOne({ Rut: { $eq: String(tokenValido.token.rut) } }).populate({
+        let trabajador = await TrabajadorModel.findOne({ Rut: { $eq: getAuthRut(req) } }).populate({
             path: 'documentos',
             model: 'documentos', // Nombre del modelo de documentos
             populate: {
@@ -370,32 +356,18 @@ const datosApp = async (req, res) => {
             model:"Rol",
             select:"_id nombre"
         });
-        trabajador = trabajador.toObject();
-        //Credencial?????
-        delete trabajador.clave;
-        delete trabajador.notificaciones;
-        delete trabajador.vistas;
-        delete trabajador?.lastUbication;
-        delete trabajador?.ID;
-        delete trabajador?.tokenPush;
         if (!trabajador) {
             return res.status(404).send('Trabajador no encontrado');
         }
-        res.send(trabajador);
+        res.send(sanitizeWorkerForClient(trabajador));
     } catch (error) {
-        // console.error('Error al obtener trabajador:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al obtener datos app:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
 }
 const fotoTrabajador = async (req, res) => {
-    const { token } = req.body;
-    const tokenValido = await Token.validartoken(token);
     try {
-        if (!tokenValido.valid) {
-            return res.status(401).send('Token inválido');
-        }
-
-        const trabajador = await TrabajadorModel.findOne({ Rut: { $eq: String(tokenValido.token.rut) } });
+        const trabajador = await TrabajadorModel.findOne({ Rut: { $eq: getAuthRut(req) } });
         if (!trabajador) {
             return res.status(404).send('Trabajador no encontrado');
         }
@@ -440,10 +412,13 @@ const fotoTrabajador = async (req, res) => {
 
         trabajador.perfil = finalPath;
         await trabajador.save();
-        res.status(201).send('Foto de perfil actualizada correctamente');
+        res.status(201).json({
+            message: 'Foto de perfil actualizada correctamente',
+            perfil: sanitizeWorkerForClient(trabajador).perfil,
+        });
     } catch (error) {
-        console.error('Error al actualizar foto de trabajador:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al actualizar foto de trabajador:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
 }
 

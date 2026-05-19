@@ -21,6 +21,7 @@ const tipoDocumentoRouter = require('./tipoDocumento.routes.js');
 const rol= require('./rol.routes.js');
 const permiso= require('./permiso.routes.js');
 const excelRouter = require('./excel.routes.js');
+const assetsRouter = require('./assets.routes.js');
 const { requireAuth } = require('../middlewares/auth.middleware.js');
 
 module.exports = app => {
@@ -46,4 +47,5 @@ module.exports = app => {
     app.use('/rol', requireAuth, rol);
     app.use('/permiso', requireAuth, permiso);
     app.use('/excel', requireAuth, excelRouter);
+    app.use('/assets', requireAuth, assetsRouter);
 } 

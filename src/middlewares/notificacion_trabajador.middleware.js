@@ -63,7 +63,7 @@ const registroNotificacion = async (req, res) => {
             }
         }
     } catch (error) {
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        res.status(500).send('Error interno del servidor');
     }
 };
 

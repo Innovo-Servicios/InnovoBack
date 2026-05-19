@@ -71,7 +71,7 @@ const crearcliente = async (req, res) => {
             return res.status(201).send('Cliente registrado correctamente');
         } catch (error) {
             console.error('Error al registrar cliente:', error);
-            return res.status(500).send('Error interno del servidor: ' + error.message);
+            return res.status(500).send('Error interno del servidor');
         }
     }else {
         return res.status(401).send('Token inválido');
@@ -99,7 +99,7 @@ const obtenercliente = async (req, res) => {
             }
         } catch (error) {
             console.error('Error al obtener cliente:', error);
-            return res.status(500).send('Error interno del servidor: ' + error.message);
+            return res.status(500).send('Error interno del servidor');
         }
     }else {
         return res.status(401).send('Token inválido');

@@ -182,7 +182,7 @@ const agregardireccion = async (req, res) => {
             return res.status(201).send('Direccion registrada correctamente');
         }catch (error) {
             // console.error('Error al registrar direccion:', error);
-            return res.status(500).send('Error interno del servidor: ' + error.message);
+            return res.status(500).send('Error interno del servidor');
         }
     }else {
         return res.status(401).send('Token inválido');
@@ -254,7 +254,7 @@ const modificardireccion = async (req, res) => {
             return res.send('Diereccion modificada correctamente');
         } catch (error) {
             // console.error('Error al modificar direccion:', error);
-            return res.status(500).send('Error interno del servidor: ' + error.message);
+            return res.status(500).send('Error interno del servidor');
         }
     }else {
         return res.status(401).send('Token inválido');
@@ -354,7 +354,7 @@ const obtenerdireccion = async (req, res) => {
             });
         } catch (error) {
                 // console.error('Error al obtener direccion cliente:', error);
-                return res.status(500).send('Error interno del servidor: ' + error.message);
+                return res.status(500).send('Error interno del servidor');
         }
     } else {
         return res.status(401).send('Token inválido');
@@ -390,7 +390,7 @@ const obtenerDireccionesSector = async(req, res) => {
             return res.send(direcciones);
         } catch (error) {
             // console.error('Error al obtener direcciones:', error);
-            return res.status(500).send('Error interno del servidor: ' + error.message);
+            return res.status(500).send('Error interno del servidor');
         }
     } else {
         return res.status(401).send('Token inválido');
@@ -438,7 +438,7 @@ const modificarCoord= async(req,res) => {
             return res.send('Coordenadas actualizadas correctamente');
         } catch (error) {
             // console.error('Error al modificar coordenadas:', error);
-            return res.status(500).send('Error interno del servidor: ' + error.message);
+            return res.status(500).send('Error interno del servidor');
         }
     } else {
         return res.status(401).send('Token inválido');
@@ -484,7 +484,7 @@ const comentarDireccion = async (req, res) => {
             return res.send('Comentario agregado correctamente');
         } catch (error) {
             // console.error('Error al agregar comentario:', error);
-            return res.status(500).send('Error interno del servidor: ' + error.message);
+            return res.status(500).send('Error interno del servidor');
         }
     } else {
         return res.status(401).send('Token inválido');
@@ -562,7 +562,7 @@ const listadirecciones=async(req,res)=>{
             return res.send(direcciones2);
 
         }catch (error){
-            return res.status(500).send('Error interno del servidor: ' + error.message);
+            return res.status(500).send('Error interno del servidor');
         }
     }else{
         return res.status(401).send('Token inválido');

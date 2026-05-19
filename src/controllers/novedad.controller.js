@@ -10,101 +10,99 @@ const {tipoDocumento_MongooseModel} = require('../models/tipoDocumento.model.js'
 const {trabajador_MongooseModel} = require('../models/trabajador.model.js');
 const {cliente_MongooseModel} = require('../models/cliente.model.js');
 const dayjs = require('dayjs');
-const Token = require('../controllers/token.controller.js')
 const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
+const { buildAssetUrl, getAuthRut, isPrivilegedRequest } = require('../utils/security.js');
+
+const formatNovedadFotografia = (fotografia) => {
+    if (!fotografia) return fotografia;
+    const stringPath = String(fotografia);
+    const normalized = stringPath.toLowerCase();
+    if (normalized.includes('verificacion')) {
+        return buildAssetUrl('verificaciones', stringPath);
+    }
+    return buildAssetUrl('novedades', stringPath);
+};
+
+const ensureCanAccessNovedad = async (req, novedad) => {
+    if (isPrivilegedRequest(req)) {
+        return true;
+    }
+    const trabajador = await trabajador_MongooseModel.findById(novedad.emisor).select('Rut');
+    return String(trabajador?.Rut || '').trim() === getAuthRut(req);
+};
+
 const borrarNovedad = async (req, res) => {
     try {
-        const { token } = req.body;
-        const tokenValido = await Token.validartoken(token);
-        if (tokenValido.valid) {
-            const { idNovedad } = req.body;
-            const novedad = await Novedad.findByIdAndDelete(String(idNovedad));
-            if (!novedad) {
-                return res.status(404).send('Novedad no encontrada.');
-            }
-            res.status(200).send('Novedad eliminada exitosamente');
-        } else {
-            res.status(401).send('Token inválido');
+        const { idNovedad } = req.body;
+        const novedad = await Novedad.findByIdAndDelete(String(idNovedad));
+        if (!novedad) {
+            return res.status(404).send('Novedad no encontrada.');
         }
+        res.status(200).send('Novedad eliminada exitosamente');
 
     } catch (error) {
-        // console.error('Error al borrar la novedad:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al borrar la novedad:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
 };
 
 const modificarNovedad = async (req, res) => {
     try {
-        const { token } = req.body;
-        const tokenValido = await Token.validartoken(token);
-        if (tokenValido.valid) {
-            const { idNovedad, TipoNovedadConsulta, Fotografia, idlectura, Lecturacorrecta, comentario } = req.body;
-            const novedad = await Novedad.findById(idNovedad);
-            if (!novedad) {
-                return res.status(404).send('Novedad no encontrada.');
-            }
-            const Tipoexiste = await TipoNovedad.findOne({ _id: { $eq: String(TipoNovedadConsulta) } });
-            novedad.TipoNovedad = Tipoexiste._id;
-            novedad.Fotografia = Fotografia;
-            novedad.Lecturacorrecta = Lecturacorrecta;
-            novedad.comentario = comentario;
-            await novedad.save();
-            res.status(200).send('Novedad modificada exitosamente');
-        } else {
-            res.status(401).send('Token inválido');
+        const { idNovedad, TipoNovedadConsulta, Fotografia, Lecturacorrecta, comentario } = req.body;
+        const novedad = await Novedad.findById(idNovedad);
+        if (!novedad) {
+            return res.status(404).send('Novedad no encontrada.');
         }
+        const Tipoexiste = await TipoNovedad.findOne({ _id: { $eq: String(TipoNovedadConsulta) } });
+        novedad.TipoNovedad = Tipoexiste._id;
+        novedad.Fotografia = Fotografia;
+        novedad.Lecturacorrecta = Lecturacorrecta;
+        novedad.comentario = comentario;
+        await novedad.save();
+        res.status(200).send('Novedad modificada exitosamente');
     } catch (error) {
-        // console.error('Error al modificar la novedad:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al modificar la novedad:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
 };
 
 const obtenerNovedadUno = async (req, res) => {
     try {
-        const { token } = req.body;
-        const tokenValido = await Token.validartoken(token);
-        if (tokenValido.valid) {
-            const { idNovedad } = req.body;
-            const novedad = await Novedad.findById(idNovedad);
-            if (!novedad) {
+        const { idNovedad } = req.body;
+        const novedad = await Novedad.findById(idNovedad);
+        if (!novedad) {
 
-                return res.status(404).send('Novedad no encontrada.');
-            }
-            res.status(200).send(novedad);
-        } else {
-            res.status(401).send('Token inválido');
+            return res.status(404).send('Novedad no encontrada.');
         }
+        if (!(await ensureCanAccessNovedad(req, novedad))) {
+            return res.status(403).send('Permisos insuficientes');
+        }
+        const plainNovedad = novedad.toObject();
+        plainNovedad.Fotografia = formatNovedadFotografia(plainNovedad.Fotografia);
+        res.status(200).send(plainNovedad);
     } catch (error) {
-        // console.error('Error al obtener la novedad:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al obtener la novedad:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
 };
 
 const obtenerNovedadTodos = async (req, res) => {
     try {
-        const { token } = req.body;
-        const tokenValido = await Token.validartoken(token);
-        if (tokenValido.valid) {
-            const novedades = await Novedad.find();
-            res.status(200).send(novedades);
-        } else {
-            res.status(401).send('Token inválido');
-        }
+        const novedades = await Novedad.find().lean();
+        res.status(200).send(novedades.map((novedad) => ({
+            ...novedad,
+            Fotografia: formatNovedadFotografia(novedad.Fotografia),
+        })));
     } catch (error) {
-        // console.error('Error al obtener las novedades:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al obtener novedades:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
 };
 
 const crearNovedad = async (req, res) => {      
     try {
-        const { token } = req.body;
-        
-        const tokenValido = await Token.validartoken(token);
-        const rut = tokenValido.rut;
-        if (tokenValido.valid) {
             const { TipoNovedadConsulta, idMedidor, Lecturacorrecta, Comentario } = req.body;
             let lecturacorrecta = 0;
             if(Lecturacorrecta){
@@ -170,7 +168,7 @@ const crearNovedad = async (req, res) => {
             if (!direccion) {
                 return res.status(404).send('Dirección no encontrada.');
             }
-            const emisor = await trabajador_MongooseModel.findOne({ Rut: { $eq: String(tokenValido.token.rut) } });
+            const emisor = await trabajador_MongooseModel.findOne({ Rut: { $eq: getAuthRut(req) } });
             const nuevaNovedad = new Novedad({
                 TipoNovedad: Tipoexiste._id,
                 emisor: emisor._id,
@@ -186,20 +184,14 @@ const crearNovedad = async (req, res) => {
                 mensaje: 'Novedad creada exitosamente',
                 novedadId: nuevaNovedad._id
             });
-        } else {
-            res.status(401).send('Token inválido');
-        }
     } catch (error) {
-        // console.error('Error al crear la novedad:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al crear la novedad:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
     
 };
 
 const hacernovedad = async (req, res) => {
-    const { token } = req.body;
-    const tokenValido = await Token.validartoken(token);
-    if (tokenValido.valid) {
         const { Ruta, Fecha } = req.body; //¿Que pasa si la ruta se termina al dia siguiente? arreglar lo de la fecha
         try {
             const fechaconsulta = dayjs(Fecha); // No aplicar .format aquí
@@ -217,7 +209,7 @@ const hacernovedad = async (req, res) => {
             }
 
             const sectorIds = sectores.map(sector => sector._id);
-            const direcciones = await Direccion.find({ NumeroSector: { $in: sectorIds } });
+            const direcciones = await direccion_MongooseModel.find({ NumeroSector: { $in: sectorIds } });
             if (!direcciones || direcciones.length === 0) {
                 return res.status(404).send('No se encontraron direcciones para los sectores de la ruta');
             }
@@ -233,24 +225,22 @@ const hacernovedad = async (req, res) => {
                 }
             });
 
-            res.status(200).send(novedades);
+            res.status(200).send(novedades.map((novedad) => ({
+                ...novedad.toObject(),
+                Fotografia: formatNovedadFotografia(novedad.Fotografia),
+            })));
 
 
 
         } catch (error) {
-            // console.error('Error al obtener direccion cliente:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            console.error('Error al obtener novedades de ruta:', error.message);
+            res.status(500).send('Error interno del servidor');
         }
-    } else {
-        res.status(401).send('Token inválido');
-    }
 }
 
 const obtenerUltimasNovedadesDelDia = async (req, res) => {
     try {
-        const { token , inicio, fin} = req.body;
-        const tokenValido = await Token.validartoken(token);
-        if (tokenValido.valid) {
+        const { inicio, fin} = req.body;
 
             const fechainicio = dayjs(inicio).startOf('day').subtract(3,'hours').toDate();
             const fechafin = dayjs(fin).endOf('day').subtract(3,'hours').toDate();
@@ -266,7 +256,7 @@ const obtenerUltimasNovedadesDelDia = async (req, res) => {
                 return {
                     id: novedad._id,
                     TipoNovedad: novedad.TipoNovedad,
-                    Fotografia: novedad.Fotografia,
+                    Fotografia: formatNovedadFotografia(novedad.Fotografia),
                     Lecturacorrecta: novedad.Lecturacorrecta,
                     Comentario: novedad.Comentario,
                     Fecha: novedad.Fecha,
@@ -278,17 +268,13 @@ const obtenerUltimasNovedadesDelDia = async (req, res) => {
                         nombre: trabajador.Nombre,
                         cargo: trabajador.cargo,
                         correo: trabajador.correo,
-                        lastUbication: trabajador.lastUbication
                     } : null
                 };
             }));
             res.status(200).send(novedades);
-        } else {
-            res.status(401).send('Token inválido');
-        }
     } catch (error) {
-        // console.error('Error al obtener las últimas novedades del día:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al obtener las últimas novedades del día:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
 };
 module.exports = {

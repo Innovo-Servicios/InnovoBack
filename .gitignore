@@ -5,6 +5,7 @@ package-lock.json
 __pycache__
 *.py[cod]
 uploads
+google-services.json
 google.services.json
 serviceAccountKey.json
 .next

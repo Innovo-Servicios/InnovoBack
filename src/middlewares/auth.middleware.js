@@ -14,24 +14,7 @@ const getBearerToken = (authorizationHeader) => {
 };
 
 const extractAccessToken = (req) => {
-    const bearerToken = getBearerToken(req.headers.authorization);
-    if (bearerToken) {
-        return bearerToken;
-    }
-
-    if (req.body && typeof req.body.token === 'string' && req.body.token.trim() !== '') {
-        return req.body.token.trim();
-    }
-
-    if (req.query && typeof req.query.token === 'string' && req.query.token.trim() !== '') {
-        return req.query.token.trim();
-    }
-
-    if (req.query && typeof req.query.access_token === 'string' && req.query.access_token.trim() !== '') {
-        return req.query.access_token.trim();
-    }
-
-    return null;
+    return getBearerToken(req.headers.authorization);
 };
 
 const requireAuth = async (req, res, next) => {
@@ -53,6 +36,8 @@ const requireAuth = async (req, res, next) => {
         req.accessToken = token;
 
         if (req.body && typeof req.body === 'object') {
+            // Internal compatibility for legacy controllers. Clients must still
+            // authenticate with Authorization: Bearer; body/query tokens are ignored.
             req.body.token = token;
         }
 

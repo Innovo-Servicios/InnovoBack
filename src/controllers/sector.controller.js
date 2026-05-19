@@ -32,7 +32,7 @@ const crearsectores = async (req, res) => {
             res.status(201).send('Sector registrado correctamente');
         } catch (error) {
             // console.error('Error al registrar sector:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }else {
         res.status(401).send('Token inválido');
@@ -57,7 +57,7 @@ const obtenerDatosSectores = async (req, res) => {
             res.status(200).send(response);
         } catch (error) {
             // console.error('Error al obtener datos de sector:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     } else {
         res.status(401).send('Token inválido');
@@ -89,7 +89,7 @@ const tablaSectores = async (req, res) => {
             
         } catch (error) {
             // console.error('Error al obtener sectores:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     } else {
         res.status(401).send('Token inválido');
@@ -110,7 +110,7 @@ const obtenerSectoresRuta = async (req, res) => {
             res.send(sectores);
         } catch (error) {
             // console.error('Error al obtener sectores de ruta:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     } else {
         res.status(401).send('Token inválido');

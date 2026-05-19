@@ -10,7 +10,7 @@ const obtenerPermisos = async (req, res) => {
             const permisos = await Permiso.find();
             res.send(permisos);
         }catch (error) {
-            res.status(500).send('Error interno del servidor: '+ error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }
 }
@@ -28,7 +28,7 @@ const crearPermiso = async (req, res) => {
             await nuevoPermiso.save();
             res.send('Permiso creado con éxito');
         }catch (error) {
-            res.status(500).send('Error interno del servidor: '+ error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }
 }
@@ -44,7 +44,7 @@ const eliminarPermiso = async (req, res) => {
             res.send('Permiso eliminado con éxito');
         }
         catch (error) {
-            res.status(500).send('Error interno del servidor: '+ error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }
 }

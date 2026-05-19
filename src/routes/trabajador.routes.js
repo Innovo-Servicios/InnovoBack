@@ -12,7 +12,7 @@ router.get('/',(req, res)=>{
     res.send('Ruta de trabajador');
 });
 
-router.post('/creartrabajador', requireAuth, creartrabajador)
+router.post('/creartrabajador', requireAuth, requireRole('administracion'), creartrabajador)
 router.put('/modificardatostrabajador', requireAuth, requireRole('administracion'), modificardatostrabajador)
 router.delete('/eliminartrabajador', requireAuth, requireRole('administracion'), eliminartrabajador)
 router.post('/login', authLimiter, login)

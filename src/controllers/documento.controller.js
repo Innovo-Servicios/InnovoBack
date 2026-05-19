@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const Token = require('../controllers/token.controller.js')
 const { documentos_MongooseModel } = require('../models/documentos.model.js');
 const { trabajador_MongooseModel } = require('../models/trabajador.model.js')
 const { tipoDocumento_MongooseModel } = require('../models/tipoDocumento.model.js')
@@ -7,6 +6,11 @@ const moment = require('moment-timezone');
 const fs = require('fs');
 const sharp = require('sharp');
 const path = require('path');
+const {
+    canAccessRut,
+    getAuthRut,
+    sanitizeDocumentForClient,
+} = require('../utils/security.js');
 
 const trabajadoresBasePath = path.resolve(__dirname, '../../../TRABAJADORES');
 
@@ -71,6 +75,14 @@ const resolveSafeDocumentPath = (documentPath) => {
         return null;
     }
 
+    const resolvedOriginalPath = path.resolve(normalizedPath);
+    if (
+        resolvedOriginalPath.startsWith(`${trabajadoresBasePath}${path.sep}`) &&
+        fs.existsSync(resolvedOriginalPath)
+    ) {
+        return resolvedOriginalPath;
+    }
+
     // Extract only the filename to prevent directory traversal
     const safeFileName = path.basename(String(normalizedPath));
     const resolvedPath = path.join(trabajadoresBasePath, safeFileName);
@@ -81,34 +93,10 @@ const resolveSafeDocumentPath = (documentPath) => {
     return resolvedPath;
 };
 
-const buildDocumentDownloadUrl = (documentId, documentPath) => {
-    const safeFileName = path.basename(String(documentPath || 'documento'));
-    return `/documento/archivo/${documentId}/${encodeURIComponent(safeFileName)}`;
-};
-
-const sanitizeDocument = (documento) => {
-    if (!documento) {
-        return documento;
-    }
-
-    const plainDocument = typeof documento.toObject === 'function'
-        ? documento.toObject()
-        : { ...documento };
-
-    return {
-        ...plainDocument,
-        url: buildDocumentDownloadUrl(plainDocument._id, plainDocument.url),
-    };
-};
+const sanitizeDocument = sanitizeDocumentForClient;
 
 const crearDocumento = async (req, res) => {
     const { tipo, objetivo } = req.body;
-    const token = req.accessToken || req.body.token;
-    // console.log(req.body);
-    const tokenValido = await Token.validartoken(token);
-    if (!tokenValido.valid) {
-        return res.status(401).send('Token inválido');
-    }
 
     if (!req.file) {
         return res.status(400).send('No se ha subido ningún archivo');
@@ -202,25 +190,23 @@ const crearDocumento = async (req, res) => {
 
         return res.status(201).send('Documento creado correctamente');
     } catch (error) {
-        // console.error('Error al crear el documento:', error);
-        return res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al crear el documento:', error.message);
+        return res.status(500).send('Error interno del servidor');
     }
 };
 
 
 const obtenerDocumentos = async (req, res) => {
-    const { rut, token, formato } = req.body;
-    const tokenValido = await Token.validartoken(token);
-
-    if (!tokenValido.valid) {
-        return res.status(401).send('Token inválido');
-    }
+    const { rut, formato } = req.body;
 
     try {
         const rutTrabajador = normalizeRequiredString(rut);
         const formatoNormalizado = normalizeOptionalString(formato);
         if (!rutTrabajador || !formatoNormalizado.valid) {
             return res.status(400).send('Datos de búsqueda inválidos');
+        }
+        if (!canAccessRut(req, rutTrabajador)) {
+            return res.status(403).send('Permisos insuficientes');
         }
 
         const trabajador = await trabajador_MongooseModel.findOne({
@@ -244,17 +230,13 @@ const obtenerDocumentos = async (req, res) => {
         const documentos = await documentos_MongooseModel.find(mongoose.sanitizeFilter(query));
         return res.send(documentos.map((documento) => sanitizeDocument(documento)));
     } catch (error) {
-        return res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al obtener documentos:', error.message);
+        return res.status(500).send('Error interno del servidor');
     }
 };
 
 const eliminarDocumentos = async (req, res) => {
-    const { rut, token, id } = req.body;
-    const tokenValido = await Token.validartoken(token);
-
-    if (!tokenValido.valid) {
-        return res.status(401).send('Token inválido');
-    }
+    const { rut, id } = req.body;
 
     try {
         const rutTrabajador = normalizeRequiredString(rut);
@@ -292,20 +274,14 @@ const eliminarDocumentos = async (req, res) => {
 
         return res.send('Documento eliminado correctamente');
     } catch (error) {
-        return res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al eliminar documentos:', error.message);
+        return res.status(500).send('Error interno del servidor');
     }
 };
 
 const listarDocumentos = async (req, res) => {
-    const { token } = req.body;
-    const tokenValido = await Token.validartoken(token);
-
-    if (!tokenValido.valid) {
-        return res.status(401).send('Token inválido');
-    }
-
     try {
-        const rutTrabajador = normalizeRequiredString(tokenValido.token?.rut);
+        const rutTrabajador = normalizeRequiredString(getAuthRut(req));
         if (!rutTrabajador) {
             return res.status(404).send('Trabajador no encontrado');
         }
@@ -331,7 +307,8 @@ const listarDocumentos = async (req, res) => {
 
         return res.send(datos.map((documento) => sanitizeDocument(documento)));
     } catch (error) {
-        return res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al listar documentos:', error.message);
+        return res.status(500).send('Error interno del servidor');
     }
 }
 
@@ -375,11 +352,7 @@ const descargarDocumento = async (req, res) => {
 };
 
 const deleteDocumento= async(req,res)=>{
-    const {token, id, rut}=req.body
-    const tokenValido = await Token.validartoken(token);
-    if (!tokenValido.valid) {
-        return res.status(401).send('Token inválido');
-    }
+    const { id, rut}=req.body
     try{
         const documentoId = normalizeObjectId(id);
         const rutTrabajador = normalizeRequiredString(rut);
@@ -416,7 +389,8 @@ const deleteDocumento= async(req,res)=>{
         
         return res.status(201).send('Documento eliminado correctamente');
     }catch(error){
-        return res.status(500).send('Error interno del servidor: ' + error.message);
+        console.error('Error al borrar documento:', error.message);
+        return res.status(500).send('Error interno del servidor');
     }
 }
 

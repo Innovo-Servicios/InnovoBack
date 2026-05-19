@@ -45,9 +45,9 @@ const downloadGeneratedReport = (res, stdout, allowedDirectory) => {
   try {
     resolvedPath = resolveGeneratedReportPath(stdout, allowedDirectory);
   } catch (error) {
+    logHandledError('Ruta de reporte generado inválida', error);
     return res.status(500).json({
       message: 'Archivo generado inválido',
-      error: error instanceof Error ? error.message : String(error),
     });
   }
 
@@ -61,7 +61,8 @@ const downloadGeneratedReport = (res, stdout, allowedDirectory) => {
 
   return res.download(resolvedPath, (err) => {
     if (err && !res.headersSent) {
-      return res.status(500).json({ message: 'Error al descargar el archivo', error: err.message });
+      logHandledError('Error al enviar reporte generado', err);
+      return res.status(500).json({ message: 'Error al descargar el archivo' });
     }
   });
 };
@@ -130,7 +131,8 @@ const excelAsignaciones = async (req, res) => {
       XLSX.readFile(finalPath);
     } catch (err) {
       fs.rmSync(finalPath, { force: true });
-      return res.status(400).json({ message: 'Archivo Excel inválido', error: err.message });
+      logHandledError('Archivo Excel de asignaciones inválido', err);
+      return res.status(400).json({ message: 'Archivo Excel inválido' });
     }
 
     const pythonScriptPath = path.join(__dirname, '../../scripts', 'Funciones.py');
@@ -154,10 +156,8 @@ const excelAsignaciones = async (req, res) => {
       return res.status(error.code === 2 ? 400 : 500).json(report);
     }
 
-    res.status(500).json({
-      message: 'Error al procesar el archivo',
-      error: error.stderr || error.message,
-    });
+    logHandledError('Error al procesar asignaciones', error.stderr || error.message);
+    res.status(500).json({ message: 'Error al procesar el archivo' });
   }
 };
 
@@ -179,7 +179,8 @@ const excelAte = async (req, res) => {
       XLSX.readFile(finalPath);
     } catch (err) {
       fs.rmSync(finalPath, { force: true });
-      return res.status(400).json({ message: 'Archivo Excel inválido', error: err.message });
+      logHandledError('Archivo Excel ATE inválido', err);
+      return res.status(400).json({ message: 'Archivo Excel inválido' });
     }
 
     const pythonScriptPath = path.join(__dirname, '../../scripts', 'Funciones.py');
@@ -189,7 +190,8 @@ const excelAte = async (req, res) => {
       message: 'Archivo procesado correctamente',
     });
   } catch (error) {
-    res.status(500).json({ message: 'Error al procesar el archivo', error: error.message });
+    logHandledError('Error al procesar Excel ATE', error);
+    res.status(500).json({ message: 'Error al procesar el archivo' });
   }
 };
 
@@ -200,17 +202,20 @@ const descarga_ATE = (req, res) => {
 
     execFile('python3', [pythonScriptPath, 'excel_ate', '--fecha_inicio', fecha], (error, stdout, stderr) => {
       if (error) {
-        return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: error.message });
+        logHandledError('Error al generar reporte ATE', error);
+        return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python' });
       }
       if (stderr) {
-        return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: stderr });
+        logHandledError('Error stderr reporte ATE', stderr);
+        return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python' });
       }
 
       return downloadGeneratedReport(res, stdout, reportDirectories.ate);
     });
 
   } catch (error) {
-    res.status(500).json({ message: 'Error al descargar el archivo', error: error.message });
+    logHandledError('Error al descargar ATE', error);
+    res.status(500).json({ message: 'Error al descargar el archivo' });
   }
 };
 
@@ -221,18 +226,21 @@ const descargar_novedad = (req, res) => {
 
     execFile('python3', [pythonScriptPath, 'excel_novedad', '--fecha_inicio', fechainicio, '--fecha_fin', fechafin], (error, stdout, stderr) => {
       if (error) {
-        return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python', error: error.message });
+        logHandledError('Error al generar reporte novedad', error);
+        return res.status(500).json({ message: 'Error al procesar el archivo con el script de Python' });
       }
 
       if (stderr) {
-        return res.status(500).json({ message: 'Error al ejecutar el script de Python', error: stderr });
+        logHandledError('Error stderr reporte novedad', stderr);
+        return res.status(500).json({ message: 'Error al ejecutar el script de Python' });
       }
 
       return downloadGeneratedReport(res, stdout, reportDirectories.novedad);
     });
 
   } catch (error) {
-    res.status(500).json({ message: 'Error al descargar el archivo', error: error.message });
+    logHandledError('Error al descargar novedad', error);
+    res.status(500).json({ message: 'Error al descargar el archivo' });
   }
 };
 

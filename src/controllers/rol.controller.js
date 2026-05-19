@@ -25,7 +25,7 @@ const obtenerRoles = async (req, res) => {
             );
             res.send(roles);
         }catch (error) {
-            res.status(500).send('Error interno del servidor: '+ error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }
 }
@@ -43,7 +43,7 @@ const crearRol = async (req, res) => {
             await nuevoRol.save();
             res.send('Rol creado con éxito');
         }catch (error) {
-            res.status(500).send('Error interno del servidor: '+ error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }
 }
@@ -63,7 +63,7 @@ const rolesTemporales = async (req, res) => {
             res.status(200).send('Rol temporal asignado con éxito');
         } catch (error) {
             
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }else{
         res.status(401).send('Token inválido');
@@ -81,7 +81,7 @@ const darRol = async (req,res) => {
             await trabajador.save();
             res.status(200).send('Rol asignado con éxito');
         } catch (error) {
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }else{
         res.status(401).send('Token inválido');
@@ -97,7 +97,7 @@ const modificarRol = async (req, res) => {
             await Rol.findByIdAndUpdate(String(id), {nombre, permisos});
             res.send('Rol modificado con éxito');
         }catch (error) {
-            res.status(500).send('Error interno del servidor: '+ error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }
 }

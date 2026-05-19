@@ -44,7 +44,7 @@ const crearComentario = async (req, res) => {
             return res.status(401).send('Token inválido');
         }
     } catch (error) {
-        return res.status(500).send('Error interno del servidor: ' + error.message);
+        return res.status(500).send('Error interno del servidor');
     }
 }
 
@@ -59,7 +59,7 @@ const obtenerComentario = async (req, res) => {
             res.status(401).send('Token inválido');
         }
     } catch (error) {
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        res.status(500).send('Error interno del servidor');
     }
 }
 
@@ -79,7 +79,7 @@ const eliminarComentario = async (req, res) => {
             return res.status(401).send('Token inválido');
         }
     } catch (error) {
-        return res.status(500).send('Error interno del servidor: ' + error.message);
+        return res.status(500).send('Error interno del servidor');
     }
 }
 

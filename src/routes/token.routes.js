@@ -2,7 +2,6 @@ const router = require('express').Router();
 
 const {
     clearRefreshTokenCookie,
-    crearToken,
     extractRefreshToken,
     refreshSession,
     revokeRefreshToken,
@@ -17,7 +16,9 @@ router.get('/',(req, res)=>{
     res.send('Ruta de token');
 });
 
-router.post('/creartoken', crearToken)
+router.post('/creartoken', (_req, res) => {
+    res.status(410).json({ message: 'Endpoint deshabilitado' });
+});
 router.post('/validartoken', tokenLimiter, async (req, res) => {
     try {
         const token = extractAccessToken(req);

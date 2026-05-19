@@ -24,9 +24,9 @@ const {
 
 router.post('/crearNotificacion', requireAuth, requireRole('administracion', 'supervisor'), crearNotificacion);
 router.post('/eliminarNotificacion', requireAuth, eliminarNotificacion);
-router.post('/buscarNotificacion', requireAuth, buscarNotificacion);
-router.post('/detallesNotificacion', requireAuth, detallesNotificacion);
-router.post('/obtenerNotificaciones', requireAuth, obtenerNotificaciones);
+router.post('/buscarNotificacion', requireAuth, requireRole('administracion', 'supervisor'), buscarNotificacion);
+router.post('/detallesNotificacion', requireAuth, requireRole('administracion', 'supervisor'), detallesNotificacion);
+router.post('/obtenerNotificaciones', requireAuth, requireRole('administracion', 'supervisor'), obtenerNotificaciones);
 router.post('/getNoti', requireAuth, obtenerNotificacionesDelUser);
 router.post('/getNotiPage', requireAuth, obtenerNotificacionesDelUserPaginadas);
 router.post('/infoNotificaciones', requireAuth, requireRole('administracion', 'supervisor'), infoNotificaciones);

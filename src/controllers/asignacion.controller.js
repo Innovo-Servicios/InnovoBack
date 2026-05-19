@@ -12,14 +12,12 @@ const {direccion_MongooseModel}= require('../models/direccion.model.js')
 const {ate_MongooseModel}= require('../models/ATE.model.js')
 const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
-const Token = require('../controllers/token.controller.js');
+const { getAuthRut } = require('../utils/security.js');
 
 dayjs.extend(utc);
 
 const asignarsector = async (req, res) => {
-    const { token } = req.body;
-    const tokenValido = await Token.validartoken(token);
-    if (tokenValido.valid) {
+    if (req.authUser) {
         const { trabajadorRut, sectorNumero, apoyoRut, tipo, fechaconsulta } =
             req.body;
         try {
@@ -71,7 +69,7 @@ const asignarsector = async (req, res) => {
         } catch (error) {
             console.error('Error al asignar:', error);
             res.status(500).send(
-                'Error interno del servidor: ' + error.message
+                'Error interno del servidor'
             );
         }
     } else {
@@ -81,9 +79,7 @@ const asignarsector = async (req, res) => {
 
 const obtenerAsigMes = async (req, res) => {
     try {
-        const { token } = req.body;
-        const tokenValido = await Token.validartoken(token);
-        if (tokenValido.valid) {
+        if (req.authUser) {
             const fechaInicio = dayjs()
                 .startOf('month')
                 .subtract(3, 'hours')
@@ -93,7 +89,7 @@ const obtenerAsigMes = async (req, res) => {
                 .subtract(3, 'hours')
                 .toDate();
             const trabajadorexiste = await trabajador.findOne({
-                Rut: { $eq: String(tokenValido.token.rut) },
+                Rut: { $eq: getAuthRut(req) },
             });
             if (!trabajadorexiste) {
                 return res.status(404).send('Trabajador no existente');
@@ -140,18 +136,17 @@ const obtenerAsigMes = async (req, res) => {
             res.status(401).send('Token inválido');
         }
     } catch (error) {
-        res.status(500).send('Error interno del servidor: ' + error);
+        console.error('Error al obtener asignaciones del mes:', error.message);
+        res.status(500).send('Error interno del servidor');
     }
 };
 
 const obtenerAsignacion = async (req, res) => {
-    const { token } = req.body;
-    const tokenValido = await Token.validartoken(token);
-    if (tokenValido.valid) {
+    if (req.authUser) {
         const { NumeroSector, fecha } = req.body;
         try {
             const trabajadorexiste = await trabajador.findOne({
-                Rut: { $eq: String(tokenValido.token.rut) },
+                Rut: { $eq: getAuthRut(req) },
             });
             const sectorexiste = await SECTOR.findOne({ NumeroSector: { $eq: Number(NumeroSector) } });
             if (!sectorexiste) {
@@ -175,7 +170,7 @@ const obtenerAsignacion = async (req, res) => {
         } catch (error) {
             console.error('Error al obtener datos:', error);
             res.status(500).send(
-                'Error interno del servidor: ' + error.message
+                'Error interno del servidor'
             );
         }
     } else {
@@ -184,9 +179,7 @@ const obtenerAsignacion = async (req, res) => {
 };
 
 const obtenerAsignacionDia = async (req, res) => {
-    const { token } = req.body;
-    const tokenValido = await Token.validartoken(token);
-    if (tokenValido.valid) {
+    if (req.authUser) {
         try {
             const { fecha } = req.body;
             const fechaconsulta = dayjs(fecha).utc(); // No aplicar .format aquí
@@ -204,7 +197,7 @@ const obtenerAsignacionDia = async (req, res) => {
         } catch (error) {
             console.error('Error al obtener datos:', error);
             res.status(500).send(
-                'Error interno del servidor: ' + error.message
+                'Error interno del servidor'
             );
         }
     } else {
@@ -213,9 +206,7 @@ const obtenerAsignacionDia = async (req, res) => {
 };
 
 const modificarasigancion = async (req, res) => {
-    const { token } = req.body;
-    const tokenValido = await Token.validartoken(token);
-    if (tokenValido.valid) {
+    if (req.authUser) {
         const { Nuevotrabajador, Nuevoapoyo, idAsignacion } = req.body;
         try {
             const nuevaasignacion = await Asignacion.findOne({
@@ -237,7 +228,7 @@ const modificarasigancion = async (req, res) => {
         } catch (error) {
             console.error('Error al modificar datos:', error);
             res.status(500).send(
-                'Error interno del servidor: ' + error.message
+                'Error interno del servidor'
             );
         }
     } else {
@@ -246,9 +237,7 @@ const modificarasigancion = async (req, res) => {
 };
 
 const asignarApoyo = async (req, res) => {
-    const { token } = req.body;
-    const tokenValido = await Token.validartoken(token);
-    if (tokenValido.valid) {
+    if (req.authUser) {
         const { rut, sector, fechainicio, fechafin } = req.body;
         try {
             const trabajadorExiste = await trabajador.findOne({ Rut: { $eq: String(rut) } });
@@ -268,7 +257,7 @@ const asignarApoyo = async (req, res) => {
                     .status(404)
                     .send('No se encontró una asignación cercana');
             }
-            apoyonuevo = new apoyo_MongooseModel({
+            const apoyonuevo = new apoyo_MongooseModel({
                 Trabajador: trabajadorExiste._id,
                 fecha_inicio: fechainicio,
                 fecha_fin: fechafin,
@@ -281,7 +270,7 @@ const asignarApoyo = async (req, res) => {
         } catch (error) {
             console.error('Error al asignar apoyo:', error);
             res.status(500).send(
-                'Error interno del servidor: ' + error.message
+                'Error interno del servidor'
             );
         }
     } else {
@@ -403,7 +392,7 @@ const obtenerVistaAsignaciones = async (req, res) => {
         });
     } catch (error) {
         console.error('Error al obtener vista de asignaciones:', error);
-        return res.status(500).json({ message: 'Error interno del servidor: ' + error.message });
+        return res.status(500).json({ message: 'Error interno del servidor' });
     }
 };
 

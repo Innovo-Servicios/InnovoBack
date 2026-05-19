@@ -18,7 +18,7 @@ const crearTipoNovedad = async (req, res) => {
             res.status(201).send('Tipo de novedad creado');
         } catch (error) {
             // console.error('Error al crear tipo de novedad:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     } else {
         res.status(401).send('Token inválido');
@@ -37,7 +37,7 @@ const obtenerTipoNovedad = async (req, res) => {
         }
     } catch (error) {
         // console.error('Error al obtener tipos de novedad:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        res.status(500).send('Error interno del servidor');
     }
 }
 
@@ -51,7 +51,7 @@ const eliminarTipoNovedad = async (req, res) => {
             res.status(200).send('Tipo de novedad eliminado');
         } catch (error) {
             // console.error('Error al eliminar tipo de novedad:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     } else {
         res.status(401).send('Token inválido');

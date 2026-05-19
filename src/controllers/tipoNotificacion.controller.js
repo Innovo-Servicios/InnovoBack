@@ -16,7 +16,7 @@ const crearTipoNotificacion = async (req, res) => {
             res.status(201).send('Tipo de notificacion creado');
         } catch (error) {
             // console.error('Error al crear tipo de notificacon:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     } else {
         res.status(401).send('Token inválido');
@@ -34,7 +34,7 @@ const obtenerTipoNotificacion = async (req, res) => {
         }
     } catch (error) {
         // console.error('Error al obtener tipos de notificacion:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        res.status(500).send('Error interno del servidor');
     }
 }
 const eliminarTipoNotificacion = async (req, res) => {
@@ -47,7 +47,7 @@ const eliminarTipoNotificacion = async (req, res) => {
             res.status(200).send('Tipo de notificacion eliminado');
         } catch (error) {
             // console.error('Error al eliminar tipo de notificacion:', error);
-            res.status(500).send('Error interno del servidor: ' + error.message);
+            res.status(500).send('Error interno del servidor');
         }
     } else {
         res.status(401).send('Token inválido');

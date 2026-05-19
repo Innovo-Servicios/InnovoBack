@@ -37,7 +37,7 @@ const listarComentariosUV = async (req, res) => {
     } catch (error) {
         
         // console.error('Error al obtener comentarios:', error);
-        res.status(500).send('Error interno del servidor: ' + error.message);
+        res.status(500).send('Error interno del servidor');
     }
 
 }
@@ -68,7 +68,7 @@ const crearComentarioUV = async (req, res) => {
         }
     } catch (error) {
         // console.error('Error al registrar comentario:', error);
-        return res.status(500).send('Error interno del servidor: ' + error.message);
+        return res.status(500).send('Error interno del servidor');
     }
 };
 
@@ -95,7 +95,7 @@ const eliminarComentarioUV = async (req, res) => {
         }
     } catch (error) {
         // console.error('Error al eliminar comentario:', error);
-        return res.status(500).send('Error interno del servidor: ' + error.message);
+        return res.status(500).send('Error interno del servidor');
     }
 };
 

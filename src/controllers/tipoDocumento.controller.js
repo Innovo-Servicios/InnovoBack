@@ -15,7 +15,7 @@ const crearTipo= async (req, res) => {
             await nuevoTipo.save();
             res.status(201).send('Tipo de documento creado correctamente');
         }catch (error) {
-            res.status(500).send('Error interno del servidor: '+ error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }else{
         res.status(401).send('Token inválido');
@@ -30,7 +30,7 @@ const obtenerTipos = async (req, res) => {
             const tipos = await tipoDocumento_MongooseModel.find();
             res.send(tipos);
         }catch (error) {
-            res.status(500).send('Error interno del servidor: '+ error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }else{
         res.status(401).send('Token inválido');
@@ -45,7 +45,7 @@ const eliminarTipo = async (req, res) => {
             await tipoDocumento_MongooseModel.deleteOne({ _id: { $eq: String(id) } });
             res.status(200).send('Tipo de documento eliminado correctamente');
         }catch (error) {
-            res.status(500).send('Error interno del servidor: '+ error.message);
+            res.status(500).send('Error interno del servidor');
         }
     }else{
         res.status(401).send('Token inválido');
