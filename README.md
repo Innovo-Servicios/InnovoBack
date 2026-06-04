@@ -23,14 +23,17 @@ Variables opcionales:
 
 ```bash
 export BOT_EMAIL_SUBJECT="Atenciones Especiales"
-export BOT_EMAIL_SINCE="2026-05-02"
+export BOT_EMAIL_SINCE="YYYY-MM-DD" # opcional; omitir para buscar solo desde hoy
 export BOT_DOWNLOAD_FOLDER="/home/innovo/backend/GPI/storage/descargas"
+export BOT_BACKEND_URL="http://localhost:30001"
+export BOT_ALERT_EMAIL_TO="morbemon2012@gmail.com"
+export BOT_PROCESSED_STATE_FILE="/home/innovo/backend/GPI/storage/gmail-bot-processed-ates.json"
 ```
 
-Ejecucion local sin conectar a Gmail:
+Validacion local sin conectar a Gmail ni crear ATE reales:
 
 ```bash
-python scripts/bot.py --local-only
+python scripts/bot.py --local-only --dry-run
 ```
 
 Ejecucion completa:

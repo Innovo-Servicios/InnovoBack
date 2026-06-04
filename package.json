@@ -32,7 +32,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
+    "dev": "nodemon --ignore storage --ignore public/images server.js",
     "sonar": "sonar-scanner"
   },
   "devDependencies": {

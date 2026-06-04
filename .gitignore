@@ -16,6 +16,7 @@ final_service_status.txt
 final_retry.txt
 err.log
 backend.log
-scripts
+scripts/*
+!scripts/purge-notification-history.js
 storage
 public/images

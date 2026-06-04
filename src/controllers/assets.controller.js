@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const { documentos_MongooseModel } = require('../models/documentos.model.js');
 const { ate_MongooseModel } = require('../models/ATE.model.js');
 const { Novedad } = require('../models/novedad.model.js');
+const { verificacionTerreno_MongooseModel } = require('../models/verificacionTerreno.model.js');
 const { trabajador_MongooseModel } = require('../models/trabajador.model.js');
 const { getAuthRut, isPrivilegedRequest } = require('../utils/security.js');
 
@@ -85,6 +86,21 @@ const canAccessNovedadAsset = async (req, fileName) => {
     return String(novedad?.emisor?.Rut || '').trim() === getAuthRut(req);
 };
 
+const canAccessVerificacionAsset = async (req, fileName) => {
+    if (isPrivilegedRequest(req)) {
+        return true;
+    }
+
+    const verificacion = await verificacionTerreno_MongooseModel.findOne({
+        $or: [
+            { fotografia: { $regex: fileNameRegex(fileName) } },
+            { 'intentos.fotografia': { $regex: fileNameRegex(fileName) } },
+        ],
+    }).populate({ path: 'trabajador', select: 'Rut' });
+
+    return String(verificacion?.trabajador?.Rut || '').trim() === getAuthRut(req);
+};
+
 const canAccessPerfilAsset = async (req, fileName) => {
     if (isPrivilegedRequest(req)) {
         return true;
@@ -102,8 +118,13 @@ const canAccessAsset = async (req, assetType, fileName) => {
         return canAccessAteAsset(req, fileName);
     }
 
-    if (assetType === 'novedades' || assetType === 'verificaciones') {
+    if (assetType === 'novedades') {
         return canAccessNovedadAsset(req, fileName);
+    }
+
+    if (assetType === 'verificaciones') {
+        const hasNovedadAccess = await canAccessNovedadAsset(req, fileName);
+        return hasNovedadAccess || canAccessVerificacionAsset(req, fileName);
     }
 
     if (assetType === 'perfiles') {

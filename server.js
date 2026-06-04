@@ -25,6 +25,10 @@ const {
   pushNotification,
   dispatchDueScheduledNotifications,
 } = require('./src/controllers/notificaciones.controller.js');
+const {
+  asegurarVerificacionesDelDia,
+  asegurarVerificacionesTrabajadorConectado,
+} = require('./src/controllers/verificacionTerreno.controller.js');
 const moment = require('moment-timezone');
 const mongoSanitize = require('express-mongo-sanitize');
 const { validartoken } = require('./src/controllers/token.controller.js');
@@ -276,13 +280,16 @@ const authSource = process.env.MONGO_AUTH_SOURCE
 const uri = `mongodb://${process.env.MONGO_USER}:${encodeURIComponent(process.env.MONGO_PASSWORD)}@${process.env.MONGO_HOST}:${process.env.MONGO_PORT}/${process.env.MONGO_DATABASE}${authSource}`;
 globalThis.usuariosConectados = globalThis.usuariosConectados || {};
 const usuariosCopnectados = globalThis.usuariosConectados; // Lista local en memoria compartida
-// console.log(uri)
+console.log(uri)
 db.mongoose
   .connect(uri)
   .then(() => {
     console.log('Conexión a la base de datos exitosa');
     dispatchDueScheduledNotifications(io).catch((error) => {
       logHandledError('Error al despachar notificaciones programadas al iniciar', error);
+    });
+    generarVerificacionesTerrenoDelDia('al iniciar').catch((error) => {
+      logHandledError('Error al generar verificaciones en terreno al iniciar', error);
     });
   })
   .catch((error) => {
@@ -361,6 +368,19 @@ const enviarNotificacion = (titulo, cuerpo, data = {}) => {
   io.to('role:administracion').to('role:supervisor').emit('notificacion', notification);
 };
 
+const generarVerificacionesTerrenoDelDia = async (contexto) => {
+  try {
+    const result = await asegurarVerificacionesDelDia({ io });
+    if (result.created > 0) {
+      console.log(
+        `[VerificacionTerreno] ${contexto}: ${result.created} creadas para ${result.workers} trabajadores`
+      );
+    }
+  } catch (error) {
+    logHandledError(`Error al generar verificaciones en terreno ${contexto}`, error);
+  }
+};
+
 io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth?.token;
@@ -421,6 +441,11 @@ io.on('connection', (socket) => {
         id_trabajador: rut,
         nombre: trabajador.Nombre,
         ubicacion,
+      });
+
+      await asegurarVerificacionesTrabajadorConectado({
+        trabajadorId: trabajador._id,
+        io,
       });
 
     } catch (error) {
@@ -546,6 +571,12 @@ cron.schedule('* * * * *', async () => {
     console.log('Error al actualizar roles temporales: ' + error.message);
   }
 });
+
+cron.schedule('0 * * * *', () => {
+  generarVerificacionesTerrenoDelDia('programadas').catch((error) => {
+    logHandledError('Error al generar verificaciones en terreno programadas', error);
+  });
+}, { timezone: 'America/Santiago' });
 
 // Iniciar servidor HTTP y WebSocket
 server.listen(port, '0.0.0.0', () => {
