@@ -620,6 +620,7 @@ const formatNotificationsForApp = async (notificaciones, trabajador) => {
         fecha: formatNotificationDateForClient(notificacion.fecha),
         url: formatNotificationUrlForClient(notificacion._id, notificacion.url),
         estado: vistasSet.has(notificacion._id.toString()),
+        metadata: notificacion.metadata || undefined,
         ...getNotificationAttachmentMeta(notificacion, documentMap),
         validacion: formatValidationForClient(
             validationMap.get(notificacion._id.toString()),
@@ -643,6 +644,7 @@ const formatLiveNotificationForApp = async (notificacion, trabajador) => {
         fecha: formatNotificationDateForClient(notificacion.fecha),
         url: formatNotificationUrlForClient(notificacion._id, notificacion.url),
         estado: false,
+        metadata: notificacion.metadata || undefined,
         ...getNotificationAttachmentMeta(notificacion, documentMap),
         validacion: formatValidationForClient(
             validation,
@@ -763,6 +765,7 @@ const buildPushNotificationData = ({
     fecha,
     url,
     archivoMimeType = null,
+    metadata,
 }) => ({
     contenidos: contenido,
     idNotificacion: notificationId?.toString(),
@@ -771,6 +774,8 @@ const buildPushNotificationData = ({
     url: formatNotificationUrlForClient(notificationId, url),
     archivoMimeType,
     archivoEsImagen: isNotificationImageMimeType(archivoMimeType),
+    ...(metadata && typeof metadata === 'object' ? metadata : {}),
+    ...(metadata ? { metadata } : {}),
 });
 
 const createNotificationRecord = ({
@@ -785,6 +790,7 @@ const createNotificationRecord = ({
     isScheduled,
     scheduledDate,
     documentoId,
+    metadata,
 }) => new notificaciones_MongooseModel({
     trabajadores: trabajadores.map((trabajador) => trabajador._id),
     tipo: tipoId,
@@ -795,6 +801,7 @@ const createNotificationRecord = ({
     fecha,
     documento: documentoId,
     requiereFirma,
+    metadata,
     programada: Boolean(isScheduled),
     fechaProgramacion: scheduledDate || undefined,
     fechaEnvio: isScheduled ? undefined : fecha,
@@ -825,6 +832,62 @@ const assignNotificationToWorkers = async ({
         });
         await trabajador.save();
     }
+};
+
+const createSystemNotificationForWorkers = async ({
+    trabajadores,
+    tipo = 'alert',
+    titulo,
+    mensaje,
+    contenido,
+    fecha = moment().tz(NOTIFICATION_TIMEZONE).toDate(),
+    url = null,
+    metadata,
+    io,
+}) => {
+    const targetWorkers = trabajadores.filter(Boolean);
+    if (targetWorkers.length === 0) {
+        throw new Error('No se encontraron destinatarios para la notificación');
+    }
+
+    const restipo = await TipoNotificacion.findOne({ value: { $eq: String(tipo) } });
+    if (!restipo) {
+        throw new Error(`Tipo de notificación no encontrado: ${tipo}`);
+    }
+
+    const nuevaNotificacion = createNotificationRecord({
+        trabajadores: targetWorkers,
+        tipoId: restipo._id,
+        titulo,
+        mensaje,
+        contenido,
+        url,
+        fecha,
+        requiereFirma: false,
+        isScheduled: false,
+        metadata,
+    });
+
+    await nuevaNotificacion.save();
+    const pushData = buildPushNotificationData({
+        contenido,
+        notificationId: nuevaNotificacion._id,
+        tipo: restipo.value,
+        fecha,
+        url,
+        metadata,
+    });
+
+    await assignNotificationToWorkers({
+        trabajadores: targetWorkers,
+        nuevaNotificacion,
+        titulo,
+        mensaje,
+        data: pushData,
+    });
+    await emitNotificationToWorkers(io, targetWorkers, nuevaNotificacion);
+
+    return nuevaNotificacion;
 };
 
 const emitNotificationToWorker = async (io, trabajador, nuevaNotificacion) => {
@@ -2026,6 +2089,7 @@ module.exports = {
     detallesNotificacion,
     infoNotificaciones,
     pushNotification,
+    createSystemNotificationForWorkers,
     dispatchDueScheduledNotifications,
     pushNotificationOLD,
     crearNotificacionDocumento,

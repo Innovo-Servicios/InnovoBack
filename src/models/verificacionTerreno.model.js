@@ -60,7 +60,7 @@ const verificacionTerrenoSchema = new mongoose.Schema(
             enum: ['aleatoria'],
             default: 'aleatoria',
         },
-        radioMetros: { type: Number, required: true, default: 150 },
+        radioMetros: { type: Number, required: false, default: null },
         fotografia: { type: String, required: false },
         comentario: { type: String, required: false },
         respuestaAt: { type: Date, required: false },

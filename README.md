@@ -71,3 +71,21 @@ Antes de que la ejecucion real contra Gmail funcione, completa en `.env`:
 BOT_GMAIL_USERNAME="correo@gmail.com"
 BOT_GMAIL_APP_PASSWORD="app-password-de-gmail"
 ```
+
+## WhatsApp para ATE completadas
+
+Cuando una atencion especial queda completada, el backend puede enviar un WhatsApp
+desde WhatsApp Web. La sesion se inicia con QR por consola y se guarda localmente
+en `storage/whatsapp-auth`.
+
+Variables opcionales:
+
+```bash
+WHATSAPP_ATE_ENABLED=true
+WHATSAPP_ATE_RECIPIENT=56977090807
+WHATSAPP_AUTH_PATH=storage/whatsapp-auth
+WHATSAPP_HEADLESS=true
+```
+
+Al iniciar el backend por primera vez, escanea el QR que aparece en consola. Una
+vez autenticado, el log debe mostrar `WhatsApp listo`.

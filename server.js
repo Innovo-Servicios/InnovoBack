@@ -11,9 +11,7 @@ const app = express();
 app.set('trust proxy', 1); // Confía en el primer proxy (Nginx/Cloudflare)
 const port = `${process.env.PORT}`;
 const { direccion_MongooseModel } = require('./src/models/direccion.model.js');
-const { ate_MongooseModel } = require('./src/models/ATE.model.js');
 const { Region } = require('./src/models/region.model.js');
-const { notificacion_MongooseModel } = require('./src/models/notificacion.model.js');
 // Crear servidor HTTP
 const server = http.createServer(app);
 const { execFile } = require('node:child_process');
@@ -22,16 +20,22 @@ const path = require('node:path');
 const axios = require('axios');
 const helmet = require('helmet');
 const {
-  pushNotification,
   dispatchDueScheduledNotifications,
 } = require('./src/controllers/notificaciones.controller.js');
 const {
   asegurarVerificacionesDelDia,
   asegurarVerificacionesTrabajadorConectado,
 } = require('./src/controllers/verificacionTerreno.controller.js');
-const moment = require('moment-timezone');
 const mongoSanitize = require('express-mongo-sanitize');
 const { validartoken } = require('./src/controllers/token.controller.js');
+const { initializeAteWhatsAppClient } = require('./src/utils/whatsappClient.js');
+const {
+  dispatchAteOverdueNotifications,
+} = require('./src/utils/ateOverdueNotifications.js');
+const {
+  buildLastUbicationUpdate,
+  buildTrackingEntry,
+} = require('./src/utils/workerTracking.js');
 
 const parseAllowedOrigins = (rawOrigins) =>
   String(rawOrigins || '')
@@ -87,8 +91,13 @@ const corsOptions = {
 const isPrivilegedRole = (cargo) =>
   ['administracion', 'supervisor'].includes(String(cargo || '').trim().toLowerCase());
 
+const hasCoordinateValue = (value) =>
+  value !== null && value !== undefined && value !== '';
+
 const isValidLocation = (location) =>
   location &&
+  hasCoordinateValue(location.lat) &&
+  hasCoordinateValue(location.lng) &&
   Number.isFinite(Number(location.lat)) &&
   Number.isFinite(Number(location.lng));
 
@@ -199,35 +208,6 @@ const execFileAsync = (file, args, options = {}) =>
     );
   });
 
-
-const ateatrasada = async () => {
-  const trabajadores = await trabajador_MongooseModel.find();
-  for (const trabajador of trabajadores) {
-    let ates = await ate_MongooseModel.find({
-      Trabajador: trabajador._id,
-      estado: false,
-      fecha_ate: { $lt: new Date() }
-    });
-
-    if (ates.length > 0) {
-      for (const ate of ates) {
-        let tiempo = moment().diff(moment(ate.fecha_ate), 'hours');
-        let msg = `Tienes una atención especial pendiente por más de ${tiempo} horas`;
-        await pushNotification({
-          userId: trabajador._id,
-          titulo: 'Atención Especial Pendiente',
-          mensaje: msg,
-          data: { contenidos: '', idNotificacion: '', tipo: 'alert', fecha: moment().tz('America/Santiago'), url:null },
-        }).then((res) => {
-          console.log(res);
-          return res;
-        }).catch((err) => {
-          return err;
-        });
-      }
-    }
-  }
-}
 const actualizarUV = async () => {
   const regiones = await axios.post("https://indiceuv.cl/ws/wsIndiceUVREST.php?id_region=0");
   const regionesData = regiones.data;
@@ -279,7 +259,7 @@ const authSource = process.env.MONGO_AUTH_SOURCE
   : '';
 const uri = `mongodb://${process.env.MONGO_USER}:${encodeURIComponent(process.env.MONGO_PASSWORD)}@${process.env.MONGO_HOST}:${process.env.MONGO_PORT}/${process.env.MONGO_DATABASE}${authSource}`;
 globalThis.usuariosConectados = globalThis.usuariosConectados || {};
-const usuariosCopnectados = globalThis.usuariosConectados; // Lista local en memoria compartida
+const usuariosConectados = globalThis.usuariosConectados; // Lista local en memoria compartida
 console.log(uri)
 db.mongoose
   .connect(uri)
@@ -287,6 +267,9 @@ db.mongoose
     console.log('Conexión a la base de datos exitosa');
     dispatchDueScheduledNotifications(io).catch((error) => {
       logHandledError('Error al despachar notificaciones programadas al iniciar', error);
+    });
+    dispatchAteOverdueNotifications({ io }).catch((error) => {
+      logHandledError('Error al notificar ATE atrasadas al iniciar', error);
     });
     generarVerificacionesTerrenoDelDia('al iniciar').catch((error) => {
       logHandledError('Error al generar verificaciones en terreno al iniciar', error);
@@ -381,6 +364,31 @@ const generarVerificacionesTerrenoDelDia = async (contexto) => {
   }
 };
 
+const persistirUbicacionTrabajador = async (rut, ubicacion, date = new Date()) => {
+  const lastUbication = buildLastUbicationUpdate(ubicacion, date);
+
+  if (!lastUbication) {
+    return null;
+  }
+
+  await trabajador_MongooseModel.findOneAndUpdate(
+    { Rut: String(rut) },
+    { $set: { lastUbication } }
+  );
+
+  return lastUbication;
+};
+
+const emitirSeguimientoTrabajador = (eventName, payload) => {
+  const trackingPayload = buildTrackingEntry(payload);
+
+  if (!trackingPayload) {
+    return;
+  }
+
+  io.to('role:administracion').to('role:supervisor').emit(eventName, trackingPayload);
+};
+
 io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth?.token;
@@ -432,15 +440,27 @@ io.on('connection', (socket) => {
       usuariosConectados[socket.id] = {
         id_trabajador: safeRut,
         nombre: trabajador.Nombre, // Guardamos el nombre
-        ubicacion,
+        ubicacion: {
+          lat: Number(ubicacion.lat),
+          lng: Number(ubicacion.lng),
+        },
+        ultimaActualizacion: new Date(),
       };
 
       socket.join(safeRut); // nosonar - false positive for path.join
 
-      io.to('role:administracion').to('role:supervisor').emit("actualizarUbicacion", {
-        id_trabajador: rut,
+      await persistirUbicacionTrabajador(
+        safeRut,
+        usuariosConectados[socket.id].ubicacion,
+        usuariosConectados[socket.id].ultimaActualizacion
+      );
+
+      emitirSeguimientoTrabajador("actualizarUbicacion", {
+        id_trabajador: safeRut,
         nombre: trabajador.Nombre,
-        ubicacion,
+        ubicacion: usuariosConectados[socket.id].ubicacion,
+        conectado: true,
+        ultimaActualizacion: usuariosConectados[socket.id].ultimaActualizacion,
       });
 
       await asegurarVerificacionesTrabajadorConectado({
@@ -453,15 +473,25 @@ io.on('connection', (socket) => {
     }
   });
   socket.on("actualizarUbicacion",
-    _.throttle(({ ubicacion }) => {
+    _.throttle(async ({ ubicacion }) => {
       try {
-        const rut = currentUser.rut;
         if (usuariosConectados[socket.id] && isValidLocation(ubicacion)) {
-          usuariosConectados[socket.id].ubicacion = ubicacion;
-          io.to('role:administracion').to('role:supervisor').emit("actualizarUbicacion", {
-            id_trabajador: rut,
+          const updatedAt = new Date();
+          const usuario = usuariosConectados[socket.id];
+          usuario.ubicacion = {
+            lat: Number(ubicacion.lat),
+            lng: Number(ubicacion.lng),
+          };
+          usuario.ultimaActualizacion = updatedAt;
+
+          await persistirUbicacionTrabajador(usuario.id_trabajador, usuario.ubicacion, updatedAt);
+
+          emitirSeguimientoTrabajador("actualizarUbicacion", {
+            id_trabajador: usuario.id_trabajador,
             nombre: usuariosConectados[socket.id].nombre,
-            ubicacion,
+            ubicacion: usuario.ubicacion,
+            conectado: true,
+            ultimaActualizacion: updatedAt,
           });
         }
       } catch (error) {
@@ -534,20 +564,22 @@ io.on('connection', (socket) => {
 
     if (usuario) {
       try {
-        await trabajador_MongooseModel.findOneAndUpdate(
-          { Rut: String(usuario.id_trabajador) },
-          {
-            lastUbication: {
-              ...usuario.ubicacion,
-              date: new Date(),
-            },
-          }
+        await persistirUbicacionTrabajador(
+          usuario.id_trabajador,
+          usuario.ubicacion,
+          usuario.ultimaActualizacion || new Date()
         );
 
       } catch (error) {
         logHandledError(`Error al desconectar trabajador ${usuario.id_trabajador}`, error);
       }
-      io.to('role:administracion').to('role:supervisor').emit('trabajadorDesconectado', usuariosConectados[socket.id]);
+      emitirSeguimientoTrabajador('trabajadorDesconectado', {
+        id_trabajador: usuario.id_trabajador,
+        nombre: usuario.nombre,
+        ubicacion: usuario.ubicacion,
+        conectado: false,
+        ultimaActualizacion: usuario.ultimaActualizacion,
+      });
       delete usuariosConectados[socket.id];
     }
   });
@@ -578,7 +610,14 @@ cron.schedule('0 * * * *', () => {
   });
 }, { timezone: 'America/Santiago' });
 
+cron.schedule('0 8 * * *', () => {
+  dispatchAteOverdueNotifications({ io }).catch((error) => {
+    logHandledError('Error al notificar ATE atrasadas programadas', error);
+  });
+}, { timezone: 'America/Santiago' });
+
 // Iniciar servidor HTTP y WebSocket
 server.listen(port, '0.0.0.0', () => {
   console.log(`App escuchando en localhost:${port}`);
+  initializeAteWhatsAppClient();
 });

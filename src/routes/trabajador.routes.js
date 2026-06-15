@@ -3,7 +3,7 @@ const multer = require('multer')
 const { requireAuth, requireRole } = require('../middlewares/auth.middleware.js');
 const { authLimiter, uploadLimiter } = require('../middlewares/rateLimit.middleware.js');
 
-const {obtenerRegionChile,creartrabajador, modificardatostrabajador, eliminartrabajador, login,listarTrabajadores,obtenerTrabajador, updatePushToken, listarTrabajadoresConectados,datosTrabajador, datosApp,fotoTrabajador} = require('../controllers/trabajador.controller.js');
+const {obtenerRegionChile,creartrabajador, modificardatostrabajador, eliminartrabajador, login,listarTrabajadores,obtenerTrabajador, updatePushToken, listarTrabajadoresConectados,seguimientoUbicaciones,datosTrabajador, datosApp,fotoTrabajador} = require('../controllers/trabajador.controller.js');
 
 const storage = multer.memoryStorage({limits: { fileSize: 524288000 }});
 const upload = multer({ storage }); 
@@ -20,6 +20,7 @@ router.post('/listarTrabajadores', requireAuth, requireRole('administracion', 's
 router.post('/obtenerTrabajador', requireAuth, obtenerTrabajador)
 router.post('/updatePushToken', requireAuth, updatePushToken)
 router.get('/listarTrabajadoresConectados', requireAuth, requireRole('administracion', 'supervisor'), listarTrabajadoresConectados)
+router.get('/seguimientoUbicaciones', requireAuth, requireRole('administracion', 'supervisor'), seguimientoUbicaciones)
 router.post('/datosTrabajador', requireAuth, datosTrabajador)
 router.post('/datosApp', requireAuth, datosApp)
 router.post('/fotoTrabajador', requireAuth, uploadLimiter, upload.single('file'), fotoTrabajador)

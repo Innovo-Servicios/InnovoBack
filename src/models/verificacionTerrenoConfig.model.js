@@ -22,10 +22,8 @@ const verificacionTerrenoConfigSchema = new mongoose.Schema(
         },
         radioMetros: {
             type: Number,
-            required: true,
-            default: 150,
-            min: 20,
-            max: 1000,
+            required: false,
+            default: null,
         },
     },
     { timestamps: true }

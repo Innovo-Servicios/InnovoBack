@@ -20,3 +20,4 @@ scripts/*
 !scripts/purge-notification-history.js
 storage
 public/images
+.wwebjs_cache

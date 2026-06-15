@@ -17,7 +17,7 @@ const CHILE_TZ = 'America/Santiago';
 const DEFAULT_CONFIG = {
     enabled: true,
     cantidadDiaria: 1,
-    radioMetros: 150,
+    radioMetros: null,
 };
 
 const imageMimeTypes = new Set(['image/jpeg', 'image/png', 'image/jpg']);
@@ -167,7 +167,7 @@ const formatVerification = (verification) => {
         estado: item.estado,
         fecha: item.fecha,
         origen: item.origen,
-        radioMetros: item.radioMetros,
+        radioMetros: null,
         comentario: item.comentario || null,
         respuestaAt: item.respuestaAt || null,
         latRespuesta: item.latRespuesta ?? null,
@@ -370,7 +370,7 @@ const asegurarVerificacionesParaTrabajador = async ({
                 direccion: direction._id,
                 sector: direction.NumeroSector,
                 fecha: start,
-                radioMetros: clampNumber(config.radioMetros, 20, 1000, DEFAULT_CONFIG.radioMetros),
+                radioMetros: DEFAULT_CONFIG.radioMetros,
             });
             created.push(verification);
         } catch (error) {
@@ -548,21 +548,6 @@ const responderVerificacion = async (req, res) => {
         );
         verification.distanciaMetros = distanciaMetros;
 
-        if (distanciaMetros > verification.radioMetros) {
-            verification.intentos.push({
-                ...basePayload,
-                distanciaMetros,
-                estado: 'fuera_de_rango',
-            });
-            await verification.save();
-            emitVerificationUpdate(req.io, verification);
-            return res.status(422).json({
-                message: `Fuera de rango. Distancia aproximada: ${distanciaMetros} metros.`,
-                distanciaMetros,
-                radioMetros: verification.radioMetros,
-            });
-        }
-
         verification.estado = 'validada';
         verification.respuestaAt = responseDate;
         verification.fotografia = photoPath;
@@ -656,7 +641,7 @@ const obtenerConfig = async (req, res) => {
         return res.status(200).json({
             enabled: Boolean(config.enabled),
             cantidadDiaria: config.cantidadDiaria,
-            radioMetros: config.radioMetros,
+            radioMetros: DEFAULT_CONFIG.radioMetros,
         });
     } catch (error) {
         console.error('Error al obtener configuracion de verificaciones:', error.message);
@@ -670,7 +655,7 @@ const actualizarConfig = async (req, res) => {
         const nextConfig = {
             enabled: parseBoolean(req.body?.enabled, currentConfig.enabled),
             cantidadDiaria: clampNumber(req.body?.cantidadDiaria, 1, 10, currentConfig.cantidadDiaria),
-            radioMetros: clampNumber(req.body?.radioMetros, 20, 1000, currentConfig.radioMetros),
+            radioMetros: DEFAULT_CONFIG.radioMetros,
         };
         const config = await VerificacionTerrenoConfig.findOneAndUpdate(
             { key: 'default' },
@@ -681,7 +666,7 @@ const actualizarConfig = async (req, res) => {
         return res.status(200).json({
             enabled: Boolean(config.enabled),
             cantidadDiaria: config.cantidadDiaria,
-            radioMetros: config.radioMetros,
+            radioMetros: DEFAULT_CONFIG.radioMetros,
         });
     } catch (error) {
         console.error('Error al actualizar configuracion de verificaciones:', error.message);

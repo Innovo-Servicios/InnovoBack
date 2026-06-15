@@ -6,6 +6,7 @@ const {
     guardarPlantillaCreador,
     obtenerCatalogoCreador,
     obtenerPlantillaCreador,
+    previsualizarAsignacionesManuales,
     previsualizarCreadorAsignaciones,
 } = require('../controllers/asignacionCreador.controller.js');
 const { excelAsignaciones} = require('../controllers/excel.controller');
@@ -28,6 +29,7 @@ router.post('/creador/catalogo', requireRole('administracion', 'supervisor'), ob
 router.post('/creador/plantilla', requireRole('administracion', 'supervisor'), obtenerPlantillaCreador)
 router.put('/creador/plantilla', requireRole('administracion', 'supervisor'), guardarPlantillaCreador)
 router.post('/creador/previsualizar', requireRole('administracion', 'supervisor'), previsualizarCreadorAsignaciones)
+router.post('/creador/manual/previsualizar', requireRole('administracion', 'supervisor'), previsualizarAsignacionesManuales)
 router.post('/creador/confirmar', requireRole('administracion', 'supervisor'), confirmarCreadorAsignaciones)
 router.post('/uploadAsignacion', requireRole('administracion', 'supervisor'), uploadLimiter, uploadMemory.single('file'),excelAsignaciones)
 router.post('/asignarApoyo', requireRole('administracion', 'supervisor'), asignarApoyo)

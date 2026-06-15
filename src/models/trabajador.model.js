@@ -32,8 +32,8 @@ const trabajador_Mongoose = new mongoose.Schema({
         "lastUsedAt": { type: Date, required: false },
     }],
     "lastUbication": {
-        "lat": { type: String, required: false },
-        "lng": { type: String, required: false },
+        "lat": { type: Number, required: false },
+        "lng": { type: Number, required: false },
         "date": { type: Date, required: false }
     }
 })

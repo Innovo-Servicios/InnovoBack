@@ -72,6 +72,16 @@ const previewSchema = z.object({
     template: templatePayloadSchema.optional(),
 });
 
+const manualPreviewSchema = z.object({
+    empresa: empresaSchema,
+    asignaciones: z.array(z.object({
+        fecha: z.string().trim(),
+        tipo: z.enum(ASSIGNMENT_TYPES),
+        sectorId: idSchema,
+        trabajadorId: idSchema,
+    })).default([]),
+});
+
 const confirmAssignmentSchema = z.object({
     key: z.string().trim().optional(),
     fecha: z.string().trim(),
@@ -439,10 +449,13 @@ const buildWorkerSummary = (rows) => {
             fija: 0,
             rotativa: 0,
             restante: 0,
+            manual: 0,
         };
         current.total += 1;
         current[row.tipo] += 1;
-        current[row.source] += 1;
+        if (typeof current[row.source] === 'number') {
+            current[row.source] += 1;
+        }
         map.set(key, current);
     }
     return Array.from(map.values()).sort((a, b) => b.total - a.total);
@@ -540,6 +553,129 @@ const buildPreview = async ({ empresa, year, month, routeDays, template }) => {
             porTrabajador: buildWorkerSummary(rowsWithConflicts),
             asignaciones: rowsWithConflicts,
             omitidas: omitted,
+        },
+    };
+};
+
+const validateAssignmentDate = (value, label, errors) => {
+    const dateText = String(value || '').trim();
+    if (!dateText || !/^\d{4}-\d{2}-\d{2}$/.test(dateText)) {
+        errors.push(`${label}: fecha inválida.`);
+        return null;
+    }
+
+    const parsed = dayjs.utc(dateText);
+    if (!parsed.isValid() || parsed.format('YYYY-MM-DD') !== dateText) {
+        errors.push(`${label}: fecha inválida.`);
+        return null;
+    }
+
+    return parsed.format('YYYY-MM-DD');
+};
+
+const buildManualPreview = async ({ empresa, asignaciones }) => {
+    const catalog = await loadCatalogData(empresa);
+    const sectorById = new Map(catalog.sectores.map((sector) => [sector.id, sector]));
+    const workerById = new Map(catalog.trabajadores.map((worker) => [worker.id, worker]));
+    const errors = [];
+    const seenKeys = new Set();
+    const seenWorkerDates = new Set();
+    const rows = [];
+
+    if (!asignaciones.length) {
+        errors.push('Agrega al menos una asignación manual.');
+    }
+
+    for (const [index, assignment] of asignaciones.entries()) {
+        const label = `Asignación manual ${index + 1}`;
+        const sectorId = normalizeObjectId(assignment.sectorId);
+        const trabajadorId = normalizeObjectId(assignment.trabajadorId);
+        const fecha = validateAssignmentDate(assignment.fecha, label, errors);
+
+        if (!sectorId || !sectorById.has(sectorId)) {
+            errors.push(`${label}: sector inválido para ${empresa}.`);
+        }
+        if (!trabajadorId || !workerById.has(trabajadorId)) {
+            errors.push(`${label}: trabajador inválido o no asignable.`);
+        }
+        if (!fecha || !sectorId || !trabajadorId || !sectorById.has(sectorId) || !workerById.has(trabajadorId)) {
+            continue;
+        }
+
+        const key = assignmentKey(sectorId, fecha, assignment.tipo);
+        if (seenKeys.has(key)) {
+            errors.push(`${label}: la lista contiene un duplicado para el mismo sector, fecha y tipo.`);
+            continue;
+        }
+        seenKeys.add(key);
+
+        const workerDateKey = `${trabajadorId}:${fecha}`;
+        if (seenWorkerDates.has(workerDateKey)) {
+            errors.push(`${label}: el trabajador ya está seleccionado en otra asignación del mismo día.`);
+            continue;
+        }
+        seenWorkerDates.add(workerDateKey);
+
+        rows.push({
+            key,
+            fecha,
+            tipo: assignment.tipo,
+            source: 'manual',
+            trabajador: workerById.get(trabajadorId),
+            sector: sectorById.get(sectorId),
+            conflicto: null,
+        });
+    }
+
+    if (errors.length) {
+        return { errors };
+    }
+
+    for (const [index, row] of rows.entries()) {
+        const existingWorkerAssignments = await findExistingWorkerAssignmentsOnDate(row.trabajador.id, row.fecha);
+        const hasBlockingAssignment = existingWorkerAssignments.some((assignment) => {
+            const existingSectorId = getPlainId(assignment.NumeroSector);
+            return existingSectorId !== row.sector.id || assignment.tipo !== row.tipo;
+        });
+
+        if (hasBlockingAssignment) {
+            errors.push(`Asignación manual ${index + 1}: ${row.trabajador.nombre} ya tiene una asignación el ${row.fecha}.`);
+        }
+    }
+
+    if (errors.length) {
+        return { errors };
+    }
+
+    const rowsWithConflicts = [];
+    for (const row of rows) {
+        const existing = await findExistingAssignment(row.sector.id, row.fecha, row.tipo);
+        rowsWithConflicts.push(existing ? {
+            ...row,
+            conflicto: {
+                asignacionId: String(existing._id),
+                trabajador: serializeWorker(existing.Trabajador),
+                apoyo: Boolean(existing.apoyo),
+            },
+        } : row);
+    }
+
+    return {
+        errors: [],
+        preview: {
+            empresa,
+            generatedAt: new Date().toISOString(),
+            resumen: {
+                total: rowsWithConflicts.length,
+                nuevas: rowsWithConflicts.filter((row) => !row.conflicto).length,
+                conflictos: rowsWithConflicts.filter((row) => row.conflicto).length,
+                omitidas: 0,
+                lectura: rowsWithConflicts.filter((row) => row.tipo === 'lectura').length,
+                reparto: rowsWithConflicts.filter((row) => row.tipo === 'reparto').length,
+            },
+            porTrabajador: buildWorkerSummary(rowsWithConflicts),
+            asignaciones: rowsWithConflicts,
+            omitidas: [],
         },
     };
 };
@@ -645,6 +781,23 @@ const previsualizarCreadorAsignaciones = async (req, res) => {
     return res.status(200).json(previewResult.preview);
 };
 
+const previsualizarAsignacionesManuales = async (req, res) => {
+    const parsed = manualPreviewSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+        return res.status(400).json({ message: 'Datos de previsualización manual inválidos.' });
+    }
+
+    const previewResult = await buildManualPreview(parsed.data);
+    if (previewResult.errors.length) {
+        return res.status(400).json({
+            message: 'No se pudo generar la previsualización manual.',
+            errors: previewResult.errors,
+        });
+    }
+
+    return res.status(200).json(previewResult.preview);
+};
+
 const findExistingAssignment = async (sectorId, fecha, tipo) => {
     const start = dayjs.utc(fecha).startOf('day').toDate();
     const end = dayjs.utc(fecha).endOf('day').toDate();
@@ -655,7 +808,19 @@ const findExistingAssignment = async (sectorId, fecha, tipo) => {
             $gte: start,
             $lte: end,
         },
-    });
+    }).populate({ path: 'Trabajador', select: 'Nombre Rut cargo' });
+};
+
+const findExistingWorkerAssignmentsOnDate = async (trabajadorId, fecha) => {
+    const start = dayjs.utc(fecha).startOf('day').toDate();
+    const end = dayjs.utc(fecha).endOf('day').toDate();
+    return Asignacion.find({
+        Trabajador: { $eq: trabajadorId },
+        fecha_asignacion: {
+            $gte: start,
+            $lte: end,
+        },
+    }).select('_id NumeroSector tipo fecha_asignacion').lean();
 };
 
 const confirmarCreadorAsignaciones = async (req, res) => {
@@ -764,5 +929,6 @@ module.exports = {
     obtenerPlantillaCreador,
     guardarPlantillaCreador,
     previsualizarCreadorAsignaciones,
+    previsualizarAsignacionesManuales,
     confirmarCreadorAsignaciones,
 };

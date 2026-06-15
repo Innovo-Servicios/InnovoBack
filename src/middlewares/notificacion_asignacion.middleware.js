@@ -15,6 +15,9 @@ const sharp = require('sharp');
 const moment = require('moment-timezone');
 const { tipoDocumento_MongooseModel } = require('../models/tipoDocumento.model.js');
 const { buildAssetUrl, getAuthRut, isPrivilegedRequest } = require('../utils/security.js');
+const { scheduleAteWhatsappNotification } = require('../utils/ateWhatsappNotification.js');
+
+const ATE_TIMEZONE = 'America/Santiago';
 
 const normalizeAteType = (value) =>
     String(value || '')
@@ -33,6 +36,24 @@ const parseLecturaCorrecta = (value) => {
 
     const lectura = Number(value);
     return Number.isFinite(lectura) ? lectura : Number.NaN;
+};
+
+const buildObtenerAtePendientesQuery = ({ trabajadorId, fechaFin }) => ({
+    fecha_ate: {
+        $lte: fechaFin
+    },
+    estado: { $ne: true },
+    Trabajador: trabajadorId
+});
+
+const isAteAtrasada = (fechaAte, referenceDate = new Date()) => {
+    if (!fechaAte) {
+        return false;
+    }
+
+    return moment(fechaAte)
+        .tz(ATE_TIMEZONE)
+        .isBefore(moment(referenceDate).tz(ATE_TIMEZONE).startOf('day'), 'day');
 };
 
 const asignacionATE = async (req, res) => {
@@ -84,23 +105,27 @@ const obtenerATE = async (req, res) => {
     try {
         if (req.authUser) {
             const { fecha } = req.body;
-            let dia = dayjs(fecha).format('YYYY-MM-DD');
-            const fechaInicio = dayjs(dia).subtract(1, 'day').startOf('day').toDate();
-            const fechaFin = dayjs(dia).endOf('day').toDate();
-            // console.log(dia,fechaInicio,fechaFin);
+            const fechaReferencia = fecha
+                ? moment.tz(fecha, ATE_TIMEZONE)
+                : moment().tz(ATE_TIMEZONE);
+            if (!fechaReferencia.isValid()) {
+                return res.status(400).send('Fecha inválida');
+            }
+
+            const fechaFin = fechaReferencia.clone().endOf('day').toDate();
+            const inicioHoy = moment().tz(ATE_TIMEZONE).startOf('day');
             const trabajador = await trabajador_MongooseModel.findOne({ Rut: { $eq: getAuthRut(req) } }).lean();
             if (!trabajador) {
                 return res.status(404).send('Trabajador no encontrado.');
             }
 
-            const asignaciones = await ate_MongooseModel.find({
-                fecha_ate: {
-                    $gte: fechaInicio,
-                    $lte: fechaFin
-                },
-                estado: { $ne: true },
-                Trabajador: trabajador._id
-            }).lean();
+            const asignaciones = await ate_MongooseModel
+                .find(buildObtenerAtePendientesQuery({
+                    trabajadorId: trabajador._id,
+                    fechaFin,
+                }))
+                .sort({ fecha_ate: 1 })
+                .lean();
             const resultado = (await Promise.all(asignaciones.map(async (asignacion) => {
                 const direccion = await DIRECCION.findById(asignacion.direccion).lean();
                 if (!direccion) {
@@ -122,6 +147,8 @@ const obtenerATE = async (req, res) => {
                     "sector": sector?.sector ? sector.sector.split(" ")[0] : null,
                     "tipo": tipo?.value ?? null,
                     "comentario": asignacion.comentario,
+                    "fecha_ate": asignacion.fecha_ate,
+                    "atrasada": isAteAtrasada(asignacion.fecha_ate, inicioHoy.toDate()),
                 };
             }))).filter(Boolean);
             res.status(200).send(resultado);
@@ -219,6 +246,7 @@ const repsuestaATE = async (req, res) => {
         if (!ate) {
             return res.status(404).send('ATE no encontrada');
         }
+        const wasAteAlreadyCompleted = ate.estado === true;
         if (!isPrivilegedRequest(req)) {
             const trabajadorAsignado = ate.Trabajador
                 ? await trabajador_MongooseModel.findById(ate.Trabajador).select('Rut')
@@ -287,6 +315,9 @@ const repsuestaATE = async (req, res) => {
         if (req.body.comentario) ate.respuestaComentario = req.body.comentario;
         ate.Lecturacorrecta = isAteLectura ? lecturaCorrecta : null;
         await ate.save();
+        if (!wasAteAlreadyCompleted) {
+            scheduleAteWhatsappNotification(ate._id);
+        }
         req.io.emit('nuevaAte', {});
         res.status(201).send('Documento creado correctamente');
     } catch (error) {
@@ -314,4 +345,12 @@ const editarATE = async (req, res) => {
     }
 };
 
-module.exports = { asignacionATE, obtenerATE, repsuestaATE, obtenerATE_Adm, editarATE };
+module.exports = {
+    asignacionATE,
+    obtenerATE,
+    repsuestaATE,
+    obtenerATE_Adm,
+    editarATE,
+    buildObtenerAtePendientesQuery,
+    isAteAtrasada,
+};

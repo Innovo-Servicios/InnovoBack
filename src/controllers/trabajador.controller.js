@@ -22,6 +22,9 @@ const {
     sanitizeDocumentForClient,
     sanitizeWorkerForClient,
 } = require('../utils/security.js');
+const {
+    mergeWorkerLocationSnapshots,
+} = require('../utils/workerTracking.js');
 
 const workerSchema = z.object({
     rut: z.string().trim().min(1),
@@ -42,7 +45,7 @@ const isHashedPassword = (value) =>
     typeof value === 'string' && /^\$2[aby]\$\d{2}\$/.test(value);
 
 const hashPassword = async (plainPassword) => bcrypt.hash(plainPassword, 12);
-const sharedConnectedWorkers = global.usuariosConectados || {};
+const getSharedConnectedWorkers = () => globalThis.usuariosConectados || {};
 
 const listarTrabajadores = async (req, res) => {
     try {
@@ -55,11 +58,32 @@ const listarTrabajadores = async (req, res) => {
     }
 };
 const listarTrabajadoresConectados = (req, res) => {
-    const trabajadores = Object.values(sharedConnectedWorkers).map((u) => ({
+    const trabajadores = Object.values(getSharedConnectedWorkers()).map((u) => ({
       id: u.id_trabajador,
       ubicacion: u.ubicacion,
     }));
     res.status(200).send(trabajadores);
+};
+
+const seguimientoUbicaciones = async (req, res) => {
+    try {
+        const trabajadores = await TrabajadorModel.find({
+            'lastUbication.lat': { $exists: true, $ne: null },
+            'lastUbication.lng': { $exists: true, $ne: null },
+        })
+            .select('Rut Nombre lastUbication')
+            .lean();
+
+        const ubicaciones = mergeWorkerLocationSnapshots({
+            workers: trabajadores,
+            connectedWorkers: Object.values(getSharedConnectedWorkers()),
+        });
+
+        return res.status(200).send(ubicaciones);
+    } catch (error) {
+        console.error('Error al obtener seguimiento de trabajadores:', error.message);
+        return res.status(500).send('Error interno del servidor');
+    }
 };
 const creartrabajador = async (req, res) => {
     const parsedWorker = workerSchema.safeParse(req.body);
@@ -455,4 +479,4 @@ const obtenerRegionChile = async (req,res) => {
   
 
 
-module.exports = {obtenerRegionChile,creartrabajador, modificardatostrabajador, eliminartrabajador, login, listarTrabajadores,obtenerTrabajador, updatePushToken,listarTrabajadoresConectados,datosTrabajador, datosApp,fotoTrabajador};
+module.exports = {obtenerRegionChile,creartrabajador, modificardatostrabajador, eliminartrabajador, login, listarTrabajadores,obtenerTrabajador, updatePushToken,listarTrabajadoresConectados,seguimientoUbicaciones,datosTrabajador, datosApp,fotoTrabajador};

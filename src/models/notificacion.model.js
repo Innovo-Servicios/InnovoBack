@@ -14,6 +14,7 @@ const notificaciones_Mongoose = new mongoose.Schema({
     "fechaProgramacion":{type: Date, required: false},
     "fechaEnvio":{type: Date, required: false},
     "fechaEnvioIniciado":{type: Date, required: false},
+    "metadata":{type: mongoose.Schema.Types.Mixed, required: false},
     "estado": {
         type: String,
         enum: ['programada', 'enviando', 'enviado', 'fallida'],
