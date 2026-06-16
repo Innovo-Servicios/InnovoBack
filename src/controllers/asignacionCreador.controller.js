@@ -10,11 +10,17 @@ const {
     ASSIGNMENT_TYPES,
     asignacionPlantilla_MongooseModel: AsignacionPlantilla,
 } = require('../models/asignacionPlantilla.model');
+const {
+    buildHolidayDateSet,
+    getChileanHolidays,
+} = require('../utils/chileanHolidays');
 
 dayjs.extend(utc);
 
 const EMPRESAS = ['GasValpo', 'Comercial', 'Energas'];
 const ASSIGNMENT_TYPE_SET = new Set(ASSIGNMENT_TYPES);
+const EXTRA_ROUTE_DAY_TYPES = ['adelantoVerificacion', 'verificacion'];
+const ROUTE_DAY_DATE_FIELDS = Array.from(new Set([...ASSIGNMENT_TYPES, ...EXTRA_ROUTE_DAY_TYPES]));
 
 const empresaSchema = z.enum(EMPRESAS);
 const idSchema = z.string().trim().min(1);
@@ -60,8 +66,9 @@ const templatePayloadSchema = z.object({
 const routeDaySchema = z.object({
     rutaId: idSchema.optional(),
     rutaNumero: z.coerce.number().int().optional(),
-    lectura: z.string().trim().optional().nullable(),
-    reparto: z.string().trim().optional().nullable(),
+    ...Object.fromEntries(
+        ROUTE_DAY_DATE_FIELDS.map((field) => [field, z.string().trim().optional().nullable()])
+    ),
 });
 
 const previewSchema = z.object({
@@ -356,7 +363,36 @@ const isWorkerBlocked = (restrictionMap, workerId, sectorId) =>
 
 const randomPick = (values) => values[Math.floor(Math.random() * values.length)];
 
-const validateMonthDate = (value, year, month, label, errors) => {
+const extractYearFromDateText = (value) => {
+    const dateText = String(value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText)) return null;
+
+    const parsed = dayjs.utc(dateText);
+    return parsed.isValid() ? parsed.year() : null;
+};
+
+const loadHolidayDateSetForYear = async (year) => {
+    const { holidays } = await getChileanHolidays(year);
+
+    return buildHolidayDateSet(holidays);
+};
+
+const loadHolidayDateSetsForYears = async (years) => {
+    const validYears = unique(years.filter((year) => Number.isInteger(year)));
+    const entries = await Promise.all(
+        validYears.map(async (year) => [year, await loadHolidayDateSetForYear(year)])
+    );
+
+    return new Map(entries);
+};
+
+const getHolidayDateSetForDate = (dateText, holidayDateSetsByYear) => {
+    const year = extractYearFromDateText(dateText);
+
+    return year ? holidayDateSetsByYear.get(year) || new Set() : new Set();
+};
+
+const validateMonthDate = (value, year, month, label, errors, holidayDates = new Set()) => {
     const dateText = String(value || '').trim();
     if (!dateText) return null;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText)) {
@@ -375,10 +411,16 @@ const validateMonthDate = (value, year, month, label, errors) => {
         return null;
     }
 
-    return parsed.format('YYYY-MM-DD');
+    const normalizedDate = parsed.format('YYYY-MM-DD');
+    if (holidayDates.has(normalizedDate)) {
+        errors.push(`${label}: cae en feriado chileno.`);
+        return null;
+    }
+
+    return normalizedDate;
 };
 
-const buildRouteDaysMap = (routeDays, routes, year, month) => {
+const buildRouteDaysMap = (routeDays, routes, year, month, holidayDates) => {
     const errors = [];
     const routesById = new Map(routes.map((route) => [route.id, route]));
     const routesByNumber = new Map(routes.map((route) => [String(route.numero), route]));
@@ -393,10 +435,12 @@ const buildRouteDaysMap = (routeDays, routes, year, month) => {
             continue;
         }
 
-        map.set(route.id, {
-            lectura: validateMonthDate(day.lectura, year, month, `Ruta ${route.numero} lectura`, errors),
-            reparto: validateMonthDate(day.reparto, year, month, `Ruta ${route.numero} reparto`, errors),
-        });
+        map.set(route.id, Object.fromEntries(
+            ROUTE_DAY_DATE_FIELDS.map((field) => [
+                field,
+                validateMonthDate(day[field], year, month, `Ruta ${route.numero} ${field}`, errors, holidayDates),
+            ])
+        ));
     }
 
     return { map, errors };
@@ -463,7 +507,21 @@ const buildWorkerSummary = (rows) => {
 
 const buildPreview = async ({ empresa, year, month, routeDays, template }) => {
     const catalog = await loadCatalogData(empresa);
-    const { map: routeDaysMap, errors: routeDayErrors } = buildRouteDaysMap(routeDays, catalog.rutas, year, month);
+    let holidayDates;
+
+    try {
+        holidayDates = await loadHolidayDateSetForYear(year);
+    } catch (error) {
+        return { errors: ['No se pudieron cargar los feriados chilenos. Intenta nuevamente.'] };
+    }
+
+    const { map: routeDaysMap, errors: routeDayErrors } = buildRouteDaysMap(
+        routeDays,
+        catalog.rutas,
+        year,
+        month,
+        holidayDates
+    );
     if (routeDayErrors.length) {
         return { errors: routeDayErrors };
     }
@@ -557,7 +615,7 @@ const buildPreview = async ({ empresa, year, month, routeDays, template }) => {
     };
 };
 
-const validateAssignmentDate = (value, label, errors) => {
+const validateAssignmentDate = (value, label, errors, holidayDates = new Set()) => {
     const dateText = String(value || '').trim();
     if (!dateText || !/^\d{4}-\d{2}-\d{2}$/.test(dateText)) {
         errors.push(`${label}: fecha inválida.`);
@@ -570,7 +628,13 @@ const validateAssignmentDate = (value, label, errors) => {
         return null;
     }
 
-    return parsed.format('YYYY-MM-DD');
+    const normalizedDate = parsed.format('YYYY-MM-DD');
+    if (holidayDates.has(normalizedDate)) {
+        errors.push(`${label}: cae en feriado chileno.`);
+        return null;
+    }
+
+    return normalizedDate;
 };
 
 const buildManualPreview = async ({ empresa, asignaciones }) => {
@@ -581,16 +645,30 @@ const buildManualPreview = async ({ empresa, asignaciones }) => {
     const seenKeys = new Set();
     const seenWorkerDates = new Set();
     const rows = [];
+    let holidayDateSetsByYear = new Map();
 
     if (!asignaciones.length) {
         errors.push('Agrega al menos una asignación manual.');
+    }
+
+    try {
+        holidayDateSetsByYear = await loadHolidayDateSetsForYears(
+            asignaciones.map((assignment) => extractYearFromDateText(assignment.fecha))
+        );
+    } catch (error) {
+        return { errors: ['No se pudieron cargar los feriados chilenos. Intenta nuevamente.'] };
     }
 
     for (const [index, assignment] of asignaciones.entries()) {
         const label = `Asignación manual ${index + 1}`;
         const sectorId = normalizeObjectId(assignment.sectorId);
         const trabajadorId = normalizeObjectId(assignment.trabajadorId);
-        const fecha = validateAssignmentDate(assignment.fecha, label, errors);
+        const fecha = validateAssignmentDate(
+            assignment.fecha,
+            label,
+            errors,
+            getHolidayDateSetForDate(assignment.fecha, holidayDateSetsByYear)
+        );
 
         if (!sectorId || !sectorById.has(sectorId)) {
             errors.push(`${label}: sector inválido para ${empresa}.`);
@@ -687,6 +765,23 @@ const obtenerCatalogoCreador = async (req, res) => {
         return res.status(200).json(catalog);
     } catch (error) {
         return res.status(400).json({ message: 'No se pudo obtener el catálogo de asignaciones.' });
+    }
+};
+
+const obtenerFeriadosChilenos = async (req, res) => {
+    const year = Number(req.params?.year);
+
+    if (!Number.isInteger(year) || year < 2020 || year > 2100) {
+        return res.status(400).json({ message: 'Año de feriados inválido.' });
+    }
+
+    try {
+        const result = await getChileanHolidays(year);
+        return res.status(200).json(result);
+    } catch (error) {
+        return res.status(502).json({
+            message: 'No se pudieron cargar los feriados chilenos.',
+        });
     }
 };
 
@@ -829,6 +924,18 @@ const confirmarCreadorAsignaciones = async (req, res) => {
         return res.status(400).json({ message: 'Datos de confirmación inválidos.' });
     }
 
+    let holidayDateSetsByYear;
+    try {
+        holidayDateSetsByYear = await loadHolidayDateSetsForYears(
+            parsed.data.asignaciones.map((assignment) => extractYearFromDateText(assignment.fecha))
+        );
+    } catch (error) {
+        return res.status(502).json({
+            message: 'No se pudieron cargar los feriados chilenos.',
+            errors: ['No se pudieron validar los feriados chilenos. Intenta nuevamente.'],
+        });
+    }
+
     const [sectores, trabajadores] = await Promise.all([
         Sector.find({ empresa: { $eq: parsed.data.empresa } }).select('_id').lean(),
         Trabajador.find({ cargo: { $ne: 'administracion' } }).select('_id').lean(),
@@ -847,7 +954,8 @@ const confirmarCreadorAsignaciones = async (req, res) => {
             dayjs.utc(assignment.fecha).year(),
             dayjs.utc(assignment.fecha).month() + 1,
             `Asignación ${index + 1}`,
-            errors
+            errors,
+            getHolidayDateSetForDate(assignment.fecha, holidayDateSetsByYear)
         );
 
         if (!sectorId || !sectorIds.has(sectorId)) {
@@ -926,6 +1034,7 @@ const confirmarCreadorAsignaciones = async (req, res) => {
 
 module.exports = {
     obtenerCatalogoCreador,
+    obtenerFeriadosChilenos,
     obtenerPlantillaCreador,
     guardarPlantillaCreador,
     previsualizarCreadorAsignaciones,

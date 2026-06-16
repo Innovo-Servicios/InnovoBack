@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const ASSIGNMENT_TYPES = ['lectura', 'reparto'];
+const ASSIGNMENT_TYPES = ['lectura', 'reparto','delantoVerificacion', 'verificacion'];
 
 const assignmentTypeField = {
     type: String,

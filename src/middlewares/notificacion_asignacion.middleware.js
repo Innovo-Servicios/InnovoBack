@@ -3,6 +3,7 @@ const { medidor_MongooseModel: MEDIDOR } = require('../models/medidor.model.js')
 const { asignacion_MongooseModel: Asignacion } = require('../models/asignacion.model.js');
 const { direccion_MongooseModel: DIRECCION } = require('../models/direccion.model.js');
 const { sector_MongooseModel: SECTOR } = require('../models/sector.model.js');
+const { ruta_MongooseModel: RUTA } = require('../models/ruta.model.js');
 const { ate_MongooseModel } = require('../models/ATE.model.js');
 const { trabajador_MongooseModel } = require('../models/trabajador.model.js');
 const { TipoNovedad } = require('../models/tipoNovedad.model.js');
@@ -37,6 +38,49 @@ const parseLecturaCorrecta = (value) => {
     const lectura = Number(value);
     return Number.isFinite(lectura) ? lectura : Number.NaN;
 };
+
+const resolveAteContext = async (direccion) => {
+    const sector = direccion?.NumeroSector
+        ? await SECTOR.findById(direccion.NumeroSector).lean()
+        : null;
+    const ruta = sector?.NumeroRuta
+        ? await RUTA.findById(sector.NumeroRuta).lean()
+        : null;
+
+    return { sector, ruta };
+};
+
+const formatAteContext = ({ sector, ruta }) => ({
+    sector: sector
+        ? {
+            _id: sector._id,
+            nombre: sector.sector,
+            numero: sector.NumeroSector ?? null,
+            ruta: ruta?.NumeroRuta ?? null,
+            empresa: sector.empresa ?? null,
+        }
+        : null,
+    ruta: ruta
+        ? {
+            _id: ruta._id,
+            numero: ruta.NumeroRuta ?? null,
+        }
+        : null,
+});
+
+const buildAteResponse = ({ ate, direccion, tipo, trabajador, foto, sector, ruta }) => ({
+    id: ate._id,
+    comentario: ate.comentario,
+    tipo: tipo ? { _id: tipo._id, nombre: tipo.value } : null,
+    direccion: direccion ? { _id: direccion._id, nombre: direccion.calle, lat: direccion.LAT, lng: direccion.LNG } : null,
+    ...formatAteContext({ sector, ruta }),
+    Trabajador: trabajador ? { _id: trabajador._id, nombre: trabajador.Nombre } : null,
+    fecha_ate: moment(ate.fecha_ate),
+    estado: ate.estado,
+    respuestaComentario: ate.respuestaComentario || null,
+    Lecturacorrecta: ate.Lecturacorrecta ?? null,
+    ...(ate.fotografia && foto ? { fotografia: buildAssetUrl('ate', foto.url) } : {})
+});
 
 const buildObtenerAtePendientesQuery = ({ trabajadorId, fechaFin }) => ({
     fecha_ate: {
@@ -185,24 +229,22 @@ const obtenerATE_Adm = async (req, res) => {
         const ateData = await Promise.all(ates.map(async (asignacion) => {
             // Ejecuta las consultas en paralelo para optimizar la ejecución
             const [direccion, tipo, trabajador, foto] = await Promise.all([
-                DIRECCION.findById(asignacion.direccion),
-                TipoNovedad.findById(asignacion.tipo),
-                trabajador_MongooseModel.findById(asignacion.Trabajador),
+                asignacion.direccion ? DIRECCION.findById(asignacion.direccion).lean() : Promise.resolve(null),
+                asignacion.tipo ? TipoNovedad.findById(asignacion.tipo).lean() : Promise.resolve(null),
+                asignacion.Trabajador ? trabajador_MongooseModel.findById(asignacion.Trabajador).lean() : Promise.resolve(null),
                 asignacion.fotografia ? documentos_MongooseModel.findById(asignacion.fotografia) : Promise.resolve(null)
             ]);
+            const ateContext = await resolveAteContext(direccion);
 
-            return {
-                id: asignacion._id,
-                comentario: asignacion.comentario,
-                tipo: tipo ? { _id: tipo._id, nombre: tipo.value } : null,
-                direccion: direccion ? { _id: direccion._id, nombre: direccion.calle, lat: direccion.LAT, lng: direccion.LNG } : null,
-                Trabajador: trabajador ? { _id: trabajador._id, nombre: trabajador.Nombre } : null,
-                fecha_ate: moment(asignacion.fecha_ate),
-                estado: asignacion.estado,
-                respuestaComentario: asignacion.respuestaComentario || null,
-                Lecturacorrecta: asignacion.Lecturacorrecta ?? null,
-                ...(asignacion.fotografia && foto ? { fotografia: buildAssetUrl('ate', foto.url) } : {})
-            };
+            return buildAteResponse({
+                ate: asignacion,
+                direccion,
+                tipo,
+                trabajador,
+                foto,
+                sector: ateContext.sector,
+                ruta: ateContext.ruta,
+            });
         }));
 
         res.status(200).send({

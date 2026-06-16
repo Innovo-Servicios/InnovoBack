@@ -5,6 +5,7 @@ const {
     confirmarCreadorAsignaciones,
     guardarPlantillaCreador,
     obtenerCatalogoCreador,
+    obtenerFeriadosChilenos,
     obtenerPlantillaCreador,
     previsualizarAsignacionesManuales,
     previsualizarCreadorAsignaciones,
@@ -25,6 +26,7 @@ router.post('/obtenerAsignacion',obtenerAsignacion)
 router.put('/modificarasigancion', requireRole('administracion', 'supervisor'), modificarasigancion)
 router.post('/obtenerAsignacionDia', requireRole('administracion', 'supervisor'), obtenerAsignacionDia)
 router.post('/vistaAsignaciones', requireRole('administracion', 'supervisor'), obtenerVistaAsignaciones)
+router.get('/feriados/:year', requireRole('administracion', 'supervisor'), obtenerFeriadosChilenos)
 router.post('/creador/catalogo', requireRole('administracion', 'supervisor'), obtenerCatalogoCreador)
 router.post('/creador/plantilla', requireRole('administracion', 'supervisor'), obtenerPlantillaCreador)
 router.put('/creador/plantilla', requireRole('administracion', 'supervisor'), guardarPlantillaCreador)
