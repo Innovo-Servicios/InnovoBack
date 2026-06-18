@@ -2,7 +2,10 @@ const bcrypt = require('bcryptjs');
 const { z } = require('zod');
 const { validate, format } = require('rut.js')
 const Correo = require('validator');
-const { trabajador_MongooseModel: TrabajadorModel } = require('../models/trabajador.model.js');
+const {
+    trabajador_MongooseModel: TrabajadorModel,
+    EMPRESAS_TRABAJADOR,
+} = require('../models/trabajador.model.js');
 const TipoDocumento = require('../models/tipoDocumento.model.js'); // Add this line
 const Token = require('../controllers/token.controller.js')
 const {Permiso} = require('../models/permiso.model.js');
@@ -30,6 +33,7 @@ const workerSchema = z.object({
     rut: z.string().trim().min(1),
     nombre: z.string().trim().min(2),
     cargo: z.enum(['administracion', 'lector', 'supervisor', 'inspector']),
+    empresa: z.union([z.string(), z.array(z.string())]).nullable().optional(),
     correo: z.string().trim().email(),
     clave: z.string().min(8),
 });
@@ -46,6 +50,27 @@ const isHashedPassword = (value) =>
 
 const hashPassword = async (plainPassword) => bcrypt.hash(plainPassword, 12);
 const getSharedConnectedWorkers = () => globalThis.usuariosConectados || {};
+const normalizeEmpresas = (value) => {
+    if (value === undefined) {
+        return undefined;
+    }
+
+    const values = Array.isArray(value) ? value : [value];
+    const empresas = values
+        .map((item) => String(item || '').trim())
+        .filter(Boolean);
+
+    if (empresas.length === 0) {
+        return [];
+    }
+
+    const invalidEmpresa = empresas.find((empresa) => !EMPRESAS_TRABAJADOR.includes(empresa));
+    if (invalidEmpresa) {
+        return undefined;
+    }
+
+    return Array.from(new Set(empresas));
+};
 
 const listarTrabajadores = async (req, res) => {
     try {
@@ -91,7 +116,12 @@ const creartrabajador = async (req, res) => {
         return res.status(400).send('Datos de trabajador inválidos');
     }
 
-    const { rut, nombre, cargo, correo, clave } = parsedWorker.data;
+    const { rut, nombre, cargo, empresa, correo, clave } = parsedWorker.data;
+    const empresasNormalizadas = normalizeEmpresas(empresa);
+    if (empresa !== undefined && empresasNormalizadas === undefined) {
+        return res.status(400).send('Empresa inválida');
+    }
+    const empresas = empresasNormalizadas || [];
     try {
         const trabajadorExistente = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) }, Nombre: { $eq: String(nombre) } });
         if (trabajadorExistente) {
@@ -116,6 +146,7 @@ const creartrabajador = async (req, res) => {
             Rut: rut,
             Nombre: nombre,
             cargo,
+            empresa: empresas,
             correo,
             clave: passwordHash,
             rol: rol._id
@@ -126,6 +157,7 @@ const creartrabajador = async (req, res) => {
             Rut: nvotrabajador.Rut,
             Nombre: nvotrabajador.Nombre,
             cargo: nvotrabajador.cargo,
+            empresa: nvotrabajador.empresa || [],
             correo: nvotrabajador.correo,
         });
         return res.status(201).send('Trabajador registrado correctamente');
@@ -138,6 +170,10 @@ const modificardatostrabajador = async (req, res) => {
     const { rut} = req.body;
     if (req.authUser){ 
         const { Nuevonombre, Nuevocargo, Nuevocorreo, Nuevaclave } = req.body;
+        const nuevaEmpresa = normalizeEmpresas(req.body.Nuevaempresa);
+        if (req.body.Nuevaempresa !== undefined && nuevaEmpresa === undefined) {
+            return res.status(400).send('Empresa inválida');
+        }
         try {
             // Buscar el trabajador por Rut
             const trabajador = await TrabajadorModel.findOne({ Rut: { $eq: String(rut) } });
@@ -147,6 +183,7 @@ const modificardatostrabajador = async (req, res) => {
 
             if (Nuevonombre){ trabajador.Nombre = Nuevonombre};
             if (Nuevocargo){ trabajador.cargo = Nuevocargo};
+            if (req.body.Nuevaempresa !== undefined){ trabajador.empresa = nuevaEmpresa};
             if (Nuevocorreo){ trabajador.correo = Nuevocorreo};
             if (Nuevaclave){ trabajador.clave = await hashPassword(String(Nuevaclave))};
             await trabajador.save();
@@ -280,7 +317,7 @@ const obtenerTrabajador = async (req, res) => {
         // Buscar al trabajador por su RUT y poblar las notificaciones
         const trabajador = await TrabajadorModel.findOne(
             { Rut: { $eq: String(rut) } },
-            "Rut Nombre cargo apoyo correo notificaciones documentos rol rolTemporal"
+            "Rut Nombre cargo empresa apoyo correo notificaciones documentos rol rolTemporal"
         ).populate({
             path: 'notificaciones',
             model: 'notificaciones', // Nombre del modelo de notificaciones

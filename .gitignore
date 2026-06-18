@@ -21,3 +21,7 @@ scripts/*
 storage
 public/images
 .wwebjs_cache
+test/asignacion-programacion-export.test.js
+test/asignacion-proposal.test.js
+test/ate-overdue.test.js
+test/ate-overdue.test.js

@@ -11,20 +11,41 @@ const {
     asignacionPlantilla_MongooseModel: AsignacionPlantilla,
 } = require('../models/asignacionPlantilla.model');
 const {
+    ASSIGNMENT_EXCEPTION_REASONS,
+    asignacionExcepcion_MongooseModel: AssignmentException,
+} = require('../models/asignacionExcepcion.model');
+const {
     buildHolidayDateSet,
     getChileanHolidays,
 } = require('../utils/chileanHolidays');
+const {
+    incrementWorkerLoad,
+    normalizeAssignmentType,
+    normalizeAssignmentTypes,
+    pickBalancedWorker,
+    serializeCompanyList,
+} = require('../utils/asignacionProposal');
 
 dayjs.extend(utc);
 
 const EMPRESAS = ['GasValpo', 'Comercial', 'Energas'];
-const ASSIGNMENT_TYPE_SET = new Set(ASSIGNMENT_TYPES);
 const EXTRA_ROUTE_DAY_TYPES = ['adelantoVerificacion', 'verificacion'];
 const ROUTE_DAY_DATE_FIELDS = Array.from(new Set([...ASSIGNMENT_TYPES, ...EXTRA_ROUTE_DAY_TYPES]));
+const ASSIGNABLE_WORKER_FILTER = { cargo: { $eq: 'lector' } };
+const CATALOG_WORKER_FILTER = { cargo: { $in: ['administracion', 'lector', 'supervisor', 'inspector'] } };
+const ASSIGNABLE_INSPECTOR_FILTER = { cargo: { $eq: 'inspector' } };
+const ASSIGNABLE_ASSIGNMENT_FILTER = { cargo: { $in: ['lector', 'inspector'] } };
+const READER_ASSIGNMENT_TYPES = ['lectura', 'reparto'];
+const INSPECTOR_ASSIGNMENT_TYPES = ['adelantoVerificacion', 'verificacion'];
 
 const empresaSchema = z.enum(EMPRESAS);
 const idSchema = z.string().trim().min(1);
-const tiposSchema = z.array(z.enum(ASSIGNMENT_TYPES)).optional();
+const assignmentTypeSchema = z.preprocess(
+    (value) => normalizeAssignmentType(value),
+    z.enum(ASSIGNMENT_TYPES)
+);
+const tiposSchema = z.array(assignmentTypeSchema).optional();
+const monthSchema = z.string().trim().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
 
 const templatePayloadSchema = z.object({
     fixedAssignments: z.array(z.object({
@@ -51,6 +72,17 @@ const templatePayloadSchema = z.object({
         trabajadorId: idSchema,
         sectorIds: z.array(idSchema).default([]),
     })).default([]),
+    bonusGroup: z.object({
+        workerIds: z.array(idSchema).default([]),
+        sectorIds: z.array(idSchema).default([]),
+    }).default({
+        workerIds: [],
+        sectorIds: [],
+    }),
+    verificationGroups: z.array(z.object({
+        inspectorIds: z.array(idSchema).default([]),
+        sectorIds: z.array(idSchema).default([]),
+    })).default([]),
 }).default({
     fixedAssignments: [],
     rotating: {
@@ -61,6 +93,11 @@ const templatePayloadSchema = z.object({
     },
     leftoverWorkers: [],
     restrictions: [],
+    bonusGroup: {
+        workerIds: [],
+        sectorIds: [],
+    },
+    verificationGroups: [],
 });
 
 const routeDaySchema = z.object({
@@ -83,7 +120,7 @@ const manualPreviewSchema = z.object({
     empresa: empresaSchema,
     asignaciones: z.array(z.object({
         fecha: z.string().trim(),
-        tipo: z.enum(ASSIGNMENT_TYPES),
+        tipo: assignmentTypeSchema,
         sectorId: idSchema,
         trabajadorId: idSchema,
     })).default([]),
@@ -92,7 +129,7 @@ const manualPreviewSchema = z.object({
 const confirmAssignmentSchema = z.object({
     key: z.string().trim().optional(),
     fecha: z.string().trim(),
-    tipo: z.enum(ASSIGNMENT_TYPES),
+    tipo: assignmentTypeSchema,
     sectorId: idSchema,
     trabajadorId: idSchema,
     source: z.string().trim().optional(),
@@ -104,6 +141,38 @@ const confirmSchema = z.object({
     conflictResolutions: z.record(z.string(), z.enum(['keep', 'replace'])).default({}),
 });
 
+const proposalCalendarSchema = z.object({
+    routeId: idSchema.optional(),
+    rutaId: idSchema.optional(),
+    routeNumber: z.coerce.number().int().optional(),
+    rutaNumero: z.coerce.number().int().optional(),
+    lectura: z.string().trim().optional().nullable(),
+    adelantoVerificacion: z.string().trim().optional().nullable(),
+    verificacion: z.string().trim().optional().nullable(),
+    reparto: z.string().trim().optional().nullable(),
+});
+
+const exceptionDraftSchema = z.object({
+    sectorId: idSchema,
+    originalWorkerId: idSchema.optional(),
+    replacementWorkerId: idSchema,
+    reason: z.enum(ASSIGNMENT_EXCEPTION_REASONS),
+    note: z.string().trim().optional().nullable(),
+});
+
+const proposalSchema = z.object({
+    empresa: empresaSchema,
+    month: monthSchema,
+    calendar: z.array(proposalCalendarSchema).default([]),
+    exceptions: z.array(exceptionDraftSchema).default([]),
+});
+
+const saveExceptionsSchema = proposalSchema.pick({
+    empresa: true,
+    month: true,
+    exceptions: true,
+});
+
 const normalizeObjectId = (value) => {
     const text = String(value || '').trim();
     return mongoose.isValidObjectId(text) ? text : null;
@@ -112,10 +181,7 @@ const normalizeObjectId = (value) => {
 const unique = (values) => Array.from(new Set(values.filter(Boolean)));
 
 const normalizeTipos = (tipos) => {
-    const selected = Array.isArray(tipos)
-        ? unique(tipos.map((tipo) => String(tipo || '').trim()).filter((tipo) => ASSIGNMENT_TYPE_SET.has(tipo)))
-        : [];
-    return selected.length ? selected : [...ASSIGNMENT_TYPES];
+    return normalizeAssignmentTypes(tipos, ASSIGNMENT_TYPES);
 };
 
 const getPlainId = (value) => {
@@ -136,6 +202,11 @@ const buildEmptyTemplate = (empresa) => ({
     },
     leftoverWorkers: [],
     restrictions: [],
+    bonusGroup: {
+        workerIds: [],
+        sectorIds: [],
+    },
+    verificationGroups: [],
 });
 
 const serializeTemplate = (template, empresa) => {
@@ -163,6 +234,14 @@ const serializeTemplate = (template, empresa) => {
             trabajadorId: getPlainId(rule.trabajador),
             sectorIds: unique((rule.sectores || []).map(getPlainId)),
         })).filter((rule) => rule.trabajadorId),
+        bonusGroup: {
+            workerIds: unique((plainTemplate.bonusGroup?.trabajadores || []).map(getPlainId)),
+            sectorIds: unique((plainTemplate.bonusGroup?.sectores || []).map(getPlainId)),
+        },
+        verificationGroups: (plainTemplate.verificationGroups || []).map((group) => ({
+            inspectorIds: unique((group.inspectores || []).map(getPlainId)),
+            sectorIds: unique((group.sectores || []).map(getPlainId)),
+        })).filter((group) => group.inspectorIds.length || group.sectorIds.length),
         updatedAt: plainTemplate.updatedAt || null,
     };
 };
@@ -172,6 +251,8 @@ const serializeWorker = (worker) => ({
     nombre: worker?.Nombre || 'Sin trabajador',
     rut: worker?.Rut || '',
     cargo: worker?.cargo || '',
+    empresa: serializeCompanyList(worker?.empresa),
+    empresas: serializeCompanyList(worker?.empresa),
 });
 
 const serializeSector = (sector) => ({
@@ -183,15 +264,38 @@ const serializeSector = (sector) => ({
     rutaNumero: sector?.NumeroRuta?.NumeroRuta ?? null,
 });
 
+const buildCompanyWorkerFilter = (empresa, roleFilter = {}) => {
+    if (!empresa) return roleFilter;
+
+    return {
+        $and: [
+            roleFilter,
+            {
+                $or: [
+                    { empresa: { $eq: empresa } },
+                    { empresa: { $exists: false } },
+                    { empresa: { $size: 0 } },
+                ],
+            },
+        ],
+    };
+};
+
+const expectedCargoForAssignmentType = (tipo) => {
+    if (READER_ASSIGNMENT_TYPES.includes(tipo)) return 'lector';
+    if (INSPECTOR_ASSIGNMENT_TYPES.includes(tipo)) return 'inspector';
+    return null;
+};
+
 const loadCatalogData = async (empresa) => {
     const sectorFilter = empresa ? { empresa: { $eq: empresa } } : {};
-    const [sectores, trabajadores, empresasDisponibles] = await Promise.all([
+    const [sectores, workers, empresasDisponibles] = await Promise.all([
         Sector.find(sectorFilter)
             .populate({ path: 'NumeroRuta', select: 'NumeroRuta' })
             .sort({ NumeroSector: 1 })
             .lean(),
-        Trabajador.find({ cargo: { $ne: 'administracion' } })
-            .select('_id Nombre Rut cargo correo')
+        Trabajador.find(buildCompanyWorkerFilter(empresa, CATALOG_WORKER_FILTER))
+            .select('_id Nombre Rut cargo correo empresa')
             .sort({ Nombre: 1 })
             .lean(),
         Sector.distinct('empresa'),
@@ -212,6 +316,10 @@ const loadCatalogData = async (empresa) => {
         }
     }
 
+    const serializedWorkers = workers.map(serializeWorker);
+    const trabajadores = serializedWorkers.filter((worker) => worker.cargo === 'lector');
+    const inspectores = serializedWorkers.filter((worker) => worker.cargo === 'inspector');
+
     return {
         empresas: EMPRESAS.filter((item) => empresasDisponibles.includes(item)),
         rutas: Array.from(routesById.values()).sort((a, b) => (a.numero ?? 0) - (b.numero ?? 0)),
@@ -221,7 +329,9 @@ const loadCatalogData = async (empresa) => {
             }
             return (a.numero ?? 0) - (b.numero ?? 0);
         }),
-        trabajadores: trabajadores.map(serializeWorker),
+        trabajadores,
+        inspectores,
+        workers: serializedWorkers,
     };
 };
 
@@ -234,21 +344,28 @@ const normalizeTemplatePayload = async (empresa, payload) => {
         };
     }
 
-    const [sectores, rutas, trabajadores] = await Promise.all([
+    const [sectores, rutas, trabajadores, inspectores] = await Promise.all([
         Sector.find({ empresa: { $eq: empresa } }).select('_id NumeroRuta').lean(),
         Ruta.find().select('_id NumeroRuta').lean(),
-        Trabajador.find({ cargo: { $ne: 'administracion' } }).select('_id Nombre Rut cargo').lean(),
+        Trabajador.find(buildCompanyWorkerFilter(empresa, ASSIGNABLE_WORKER_FILTER)).select('_id Nombre Rut cargo empresa').lean(),
+        Trabajador.find(buildCompanyWorkerFilter(empresa, ASSIGNABLE_INSPECTOR_FILTER)).select('_id Nombre Rut cargo empresa').lean(),
     ]);
 
     const sectorIds = new Set(sectores.map((sector) => String(sector._id)));
     const routeIdsForCompany = new Set(sectores.map((sector) => getPlainId(sector.NumeroRuta)).filter(Boolean));
     const allRouteIds = new Set(rutas.map((ruta) => String(ruta._id)));
     const workerIds = new Set(trabajadores.map((worker) => String(worker._id)));
+    const inspectorIds = new Set(inspectores.map((worker) => String(worker._id)));
     const errors = [];
 
     const requireWorker = (value, label) => {
         const id = normalizeObjectId(value);
         if (!id || !workerIds.has(id)) errors.push(`${label}: trabajador no válido o no asignable.`);
+        return id;
+    };
+    const requireInspector = (value, label) => {
+        const id = normalizeObjectId(value);
+        if (!id || !inspectorIds.has(id)) errors.push(`${label}: inspector no válido para ${empresa}.`);
         return id;
     };
     const requireSector = (value, label) => {
@@ -294,6 +411,24 @@ const normalizeTemplatePayload = async (empresa, payload) => {
             requireSector(id, `Restricción ${index + 1}.${sectorIndex + 1}`)
         )),
     })).filter((rule) => rule.trabajadorId);
+
+    const bonusGroup = {
+        workerIds: unique(parsed.data.bonusGroup.workerIds.map((id, index) =>
+            requireWorker(id, `Bono trabajador ${index + 1}`)
+        )),
+        sectorIds: unique(parsed.data.bonusGroup.sectorIds.map((id, index) =>
+            requireSector(id, `Bono sector ${index + 1}`)
+        )),
+    };
+
+    const verificationGroups = parsed.data.verificationGroups.map((group, groupIndex) => ({
+        inspectorIds: unique(group.inspectorIds.map((id, index) =>
+            requireInspector(id, `Verificación ${groupIndex + 1} inspector ${index + 1}`)
+        )),
+        sectorIds: unique(group.sectorIds.map((id, index) =>
+            requireSector(id, `Verificación ${groupIndex + 1} sector ${index + 1}`)
+        )),
+    })).filter((group) => group.inspectorIds.length || group.sectorIds.length);
 
     const sectorTypeOwner = new Map();
     for (const rule of fixedAssignments) {
@@ -342,6 +477,8 @@ const normalizeTemplatePayload = async (empresa, payload) => {
             rotating,
             leftoverWorkers,
             restrictions,
+            bonusGroup,
+            verificationGroups,
         },
     };
 };
@@ -360,8 +497,6 @@ const buildRestrictionMap = (restrictions) => {
 
 const isWorkerBlocked = (restrictionMap, workerId, sectorId) =>
     Boolean(restrictionMap.get(workerId)?.has(sectorId));
-
-const randomPick = (values) => values[Math.floor(Math.random() * values.length)];
 
 const extractYearFromDateText = (value) => {
     const dateText = String(value || '').trim();
@@ -459,7 +594,7 @@ const buildExistingAssignmentsMap = async (sectorIds, year, month) => {
         },
         tipo: { $in: ASSIGNMENT_TYPES },
     })
-        .populate({ path: 'Trabajador', select: 'Nombre Rut cargo' })
+        .populate({ path: 'Trabajador', select: 'Nombre Rut cargo empresa' })
         .lean();
 
     const map = new Map();
@@ -488,15 +623,14 @@ const buildWorkerSummary = (rows) => {
         const current = map.get(key) || {
             trabajador: row.trabajador,
             total: 0,
-            lectura: 0,
-            reparto: 0,
+            ...Object.fromEntries(ASSIGNMENT_TYPES.map((tipo) => [tipo, 0])),
             fija: 0,
             rotativa: 0,
             restante: 0,
             manual: 0,
         };
         current.total += 1;
-        current[row.tipo] += 1;
+        current[row.tipo] = (current[row.tipo] || 0) + 1;
         if (typeof current[row.source] === 'number') {
             current[row.source] += 1;
         }
@@ -528,6 +662,7 @@ const buildPreview = async ({ empresa, year, month, routeDays, template }) => {
 
     const workersById = new Map(catalog.trabajadores.map((worker) => [worker.id, worker]));
     const restrictionMap = buildRestrictionMap(template.restrictions);
+    const loadByType = new Map(ASSIGNMENT_TYPES.map((tipo) => [tipo, new Map()]));
     const rows = [];
     const omitted = [];
 
@@ -547,18 +682,27 @@ const buildPreview = async ({ empresa, year, month, routeDays, template }) => {
             if (fixedRule) {
                 source = 'fija';
                 workerId = fixedRule.trabajadorId;
+                incrementWorkerLoad(loadByType.get(tipo), workerId);
             } else if (isInRotatingScope(template, sector, tipo)) {
                 source = 'rotativa';
                 const candidates = template.rotating.trabajadorIds.filter((id) =>
                     workersById.has(id) && !isWorkerBlocked(restrictionMap, id, sector.id)
                 );
-                workerId = candidates.length ? randomPick(candidates) : null;
+                workerId = pickBalancedWorker({
+                    candidateIds: candidates,
+                    workersById,
+                    loadByWorker: loadByType.get(tipo),
+                });
             } else {
                 const candidates = template.leftoverWorkers
                     .filter((rule) => rule.tipos.includes(tipo))
                     .map((rule) => rule.trabajadorId)
                     .filter((id) => workersById.has(id) && !isWorkerBlocked(restrictionMap, id, sector.id));
-                workerId = candidates.length ? randomPick(candidates) : null;
+                workerId = pickBalancedWorker({
+                    candidateIds: candidates,
+                    workersById,
+                    loadByWorker: loadByType.get(tipo),
+                });
             }
 
             if (!workerId || !workersById.has(workerId)) {
@@ -640,7 +784,11 @@ const validateAssignmentDate = (value, label, errors, holidayDates = new Set()) 
 const buildManualPreview = async ({ empresa, asignaciones }) => {
     const catalog = await loadCatalogData(empresa);
     const sectorById = new Map(catalog.sectores.map((sector) => [sector.id, sector]));
-    const workerById = new Map(catalog.trabajadores.map((worker) => [worker.id, worker]));
+    const workerById = new Map(
+        catalog.workers
+            .filter((worker) => ['lector', 'inspector'].includes(worker.cargo))
+            .map((worker) => [worker.id, worker])
+    );
     const errors = [];
     const seenKeys = new Set();
     const seenWorkerDates = new Set();
@@ -673,10 +821,12 @@ const buildManualPreview = async ({ empresa, asignaciones }) => {
         if (!sectorId || !sectorById.has(sectorId)) {
             errors.push(`${label}: sector inválido para ${empresa}.`);
         }
-        if (!trabajadorId || !workerById.has(trabajadorId)) {
-            errors.push(`${label}: trabajador inválido o no asignable.`);
+        const selectedWorker = trabajadorId ? workerById.get(trabajadorId) : null;
+        const expectedCargo = expectedCargoForAssignmentType(assignment.tipo);
+        if (!selectedWorker || selectedWorker.cargo !== expectedCargo) {
+            errors.push(`${label}: trabajador inválido para ${assignment.tipo}.`);
         }
-        if (!fecha || !sectorId || !trabajadorId || !sectorById.has(sectorId) || !workerById.has(trabajadorId)) {
+        if (!fecha || !sectorId || !trabajadorId || !sectorById.has(sectorId) || !selectedWorker || selectedWorker.cargo !== expectedCargo) {
             continue;
         }
 
@@ -758,13 +908,481 @@ const buildManualPreview = async ({ empresa, asignaciones }) => {
     };
 };
 
+const parseMonthParts = (month) => {
+    const parsed = dayjs.utc(`${month}-01`);
+
+    return {
+        year: parsed.year(),
+        month: parsed.month() + 1,
+    };
+};
+
+const normalizeCalendarPayload = (calendar) => (calendar || []).map((route) => ({
+    rutaId: route.routeId || route.rutaId,
+    rutaNumero: route.routeNumber || route.rutaNumero,
+    lectura: route.lectura,
+    adelantoVerificacion: route.adelantoVerificacion,
+    verificacion: route.verificacion,
+    reparto: route.reparto,
+}));
+
+const serializeRules = (template, empresa) => {
+    const plainTemplate = typeof template?.toObject === 'function' ? template.toObject() : template;
+    const serialized = serializeTemplate(plainTemplate, empresa);
+
+    return {
+        id: plainTemplate?._id ? String(plainTemplate._id) : null,
+        empresa,
+        fixedSectors: serialized.fixedAssignments.map((rule) => ({
+            sectorId: rule.sectorId,
+            workerId: rule.trabajadorId,
+            tipos: rule.tipos,
+        })),
+        bonusGroup: serialized.bonusGroup,
+        verificationGroups: serialized.verificationGroups,
+        legacyTemplate: serialized,
+    };
+};
+
+const serializeAssignmentException = (exception) => ({
+    id: exception?._id ? String(exception._id) : null,
+    empresa: exception?.empresa || '',
+    month: exception?.month || '',
+    sectorId: getPlainId(exception?.sector) || exception?.sectorId || null,
+    sectorName: exception?.sector?.sector || null,
+    sectorNumber: exception?.sector?.NumeroSector ?? null,
+    originalWorkerId: getPlainId(exception?.originalWorker) || exception?.originalWorkerId || null,
+    originalWorkerName: exception?.originalWorker?.Nombre || null,
+    replacementWorkerId: getPlainId(exception?.replacementWorker) || exception?.replacementWorkerId || null,
+    replacementWorkerName: exception?.replacementWorker?.Nombre || null,
+    reason: exception?.reason || '',
+    note: exception?.note || '',
+});
+
+const loadSavedExceptions = async (empresa, month) => {
+    if (!empresa || !month) return [];
+
+    return AssignmentException.find({ empresa: { $eq: empresa }, month: { $eq: month } })
+        .populate({ path: 'sector', select: 'sector NumeroSector NumeroRuta empresa' })
+        .populate({ path: 'originalWorker', select: 'Nombre Rut cargo empresa' })
+        .populate({ path: 'replacementWorker', select: 'Nombre Rut cargo empresa' })
+        .sort({ createdAt: 1 })
+        .lean();
+};
+
+const normalizeExceptionDrafts = ({ empresa, month, exceptions, sectorById, readerById }) => {
+    const errors = [];
+    const normalized = [];
+    const seenSectors = new Set();
+
+    for (const [index, exception] of (exceptions || []).entries()) {
+        const label = `Excepción ${index + 1}`;
+        const sectorId = normalizeObjectId(exception.sectorId);
+        const replacementWorkerId = normalizeObjectId(exception.replacementWorkerId);
+        const originalWorkerId = exception.originalWorkerId ? normalizeObjectId(exception.originalWorkerId) : null;
+
+        if (!sectorId || !sectorById.has(sectorId)) {
+            errors.push(`${label}: sector inválido para ${empresa}.`);
+            continue;
+        }
+        if (seenSectors.has(sectorId)) {
+            errors.push(`${label}: ya existe una excepción para el mismo sector.`);
+            continue;
+        }
+        if (!replacementWorkerId || !readerById.has(replacementWorkerId)) {
+            errors.push(`${label}: trabajador reemplazante inválido para ${empresa}.`);
+            continue;
+        }
+        if (originalWorkerId && !readerById.has(originalWorkerId)) {
+            errors.push(`${label}: trabajador original inválido para ${empresa}.`);
+            continue;
+        }
+
+        seenSectors.add(sectorId);
+        normalized.push({
+            id: null,
+            empresa,
+            month,
+            sectorId,
+            originalWorkerId,
+            replacementWorkerId,
+            reason: exception.reason,
+            note: String(exception.note || '').trim(),
+        });
+    }
+
+    return { errors, exceptions: normalized };
+};
+
+const normalizeSavedExceptions = (exceptions) => (exceptions || []).map((exception) => ({
+    ...serializeAssignmentException(exception),
+    sectorId: getPlainId(exception.sector),
+    originalWorkerId: getPlainId(exception.originalWorker),
+    replacementWorkerId: getPlainId(exception.replacementWorker),
+}));
+
+const mergeExceptionsBySector = (savedExceptions, draftExceptions) => {
+    const map = new Map();
+
+    for (const exception of savedExceptions || []) {
+        if (exception.sectorId) {
+            map.set(exception.sectorId, exception);
+        }
+    }
+    for (const exception of draftExceptions || []) {
+        if (exception.sectorId) {
+            map.set(exception.sectorId, exception);
+        }
+    }
+
+    return map;
+};
+
+const findFixedReaderRule = (template, sectorId) =>
+    template.fixedAssignments.find((rule) =>
+        rule.sectorId === sectorId && rule.tipos.some((tipo) => READER_ASSIGNMENT_TYPES.includes(tipo))
+    );
+
+const buildFreeReaderCandidates = (template, readers, sector) => {
+    const configuredReaders = template.rotating.trabajadorIds.length
+        ? template.rotating.trabajadorIds
+        : readers.map((reader) => reader.id);
+
+    if (!template.rotating.rutaIds.length && !template.rotating.sectorIds.length) {
+        return configuredReaders;
+    }
+
+    if (template.rotating.sectorIds.includes(sector.id) || template.rotating.rutaIds.includes(sector.rutaId)) {
+        return configuredReaders;
+    }
+
+    const leftoverReaders = template.leftoverWorkers.map((rule) => rule.trabajadorId);
+    return leftoverReaders.length ? leftoverReaders : configuredReaders;
+};
+
+const buildMonthlyAssignmentProposal = async ({ empresa, month, calendar, exceptions }) => {
+    const { year, month: monthNumber } = parseMonthParts(month);
+    const [catalog, templateDoc, savedExceptions] = await Promise.all([
+        loadCatalogData(empresa),
+        AsignacionPlantilla.findOne({ empresa: { $eq: empresa } }).lean(),
+        loadSavedExceptions(empresa, month),
+    ]);
+
+    const templateSource = serializeTemplate(templateDoc, empresa);
+    const { errors: templateErrors, template } = await normalizeTemplatePayload(empresa, templateSource);
+    const errors = [...templateErrors];
+    const warnings = [];
+    let holidayDates = new Set();
+
+    try {
+        holidayDates = await loadHolidayDateSetForYear(year);
+    } catch (error) {
+        errors.push('No se pudieron cargar los feriados chilenos. Intenta nuevamente.');
+    }
+
+    const { map: routeDaysMap, errors: routeDayErrors } = buildRouteDaysMap(
+        normalizeCalendarPayload(calendar),
+        catalog.rutas,
+        year,
+        monthNumber,
+        holidayDates
+    );
+    errors.push(...routeDayErrors);
+
+    const sectorById = new Map(catalog.sectores.map((sector) => [sector.id, sector]));
+    const readerById = new Map(catalog.trabajadores.map((worker) => [worker.id, worker]));
+    const inspectorById = new Map(catalog.inspectores.map((worker) => [worker.id, worker]));
+    const workerById = new Map(catalog.workers.map((worker) => [worker.id, worker]));
+    const { errors: exceptionErrors, exceptions: draftExceptions } = normalizeExceptionDrafts({
+        empresa,
+        month,
+        exceptions,
+        sectorById,
+        readerById,
+    });
+    errors.push(...exceptionErrors);
+
+    const exceptionBySector = mergeExceptionsBySector(
+        normalizeSavedExceptions(savedExceptions),
+        draftExceptions
+    );
+    const restrictionMap = buildRestrictionMap(template.restrictions);
+    const readerLoad = new Map();
+    const inspectorLoad = new Map();
+    const existingMap = await buildExistingAssignmentsMap(catalog.sectores.map((sector) => sector.id), year, monthNumber);
+    const routes = [];
+    const assignments = [];
+    const summary = {
+        totalSectors: 0,
+        fixed: 0,
+        bonus: 0,
+        free: 0,
+        exceptions: 0,
+        inspectors: 0,
+        totalAssignments: 0,
+        conflicts: 0,
+    };
+
+    for (const route of catalog.rutas) {
+        const routeSectors = catalog.sectores.filter((sector) => sector.rutaId === route.id);
+        if (!routeSectors.length) continue;
+
+        const calendarForRoute = routeDaysMap.get(route.id) || Object.fromEntries(
+            ROUTE_DAY_DATE_FIELDS.map((field) => [field, null])
+        );
+
+        if (!routeDaysMap.has(route.id)) {
+            warnings.push(`Ruta ${route.numero}: no tiene calendario configurado.`);
+        }
+
+        const sectorRows = [];
+        for (const sector of routeSectors) {
+            const exception = exceptionBySector.get(sector.id) || null;
+            let source = 'free_rotation';
+            let readerId = null;
+            let exceptionReason = null;
+
+            if (exception) {
+                source = 'exception';
+                readerId = exception.replacementWorkerId;
+                exceptionReason = exception.reason;
+                if (readerById.has(readerId)) {
+                    incrementWorkerLoad(readerLoad, readerId);
+                } else {
+                    errors.push(`Sector ${sector.numero}: excepción con reemplazante inválido.`);
+                }
+            } else {
+                const fixedRule = findFixedReaderRule(template, sector.id);
+                if (fixedRule && readerById.has(fixedRule.trabajadorId) && !isWorkerBlocked(restrictionMap, fixedRule.trabajadorId, sector.id)) {
+                    source = 'fixed';
+                    readerId = fixedRule.trabajadorId;
+                    incrementWorkerLoad(readerLoad, readerId);
+                } else if (template.bonusGroup.sectorIds.includes(sector.id)) {
+                    source = 'bonus';
+                    const candidates = template.bonusGroup.workerIds.filter((id) =>
+                        readerById.has(id) && !isWorkerBlocked(restrictionMap, id, sector.id)
+                    );
+                    readerId = pickBalancedWorker({ candidateIds: candidates, workersById: readerById, loadByWorker: readerLoad });
+                } else {
+                    const candidates = buildFreeReaderCandidates(template, catalog.trabajadores, sector)
+                        .filter((id) => readerById.has(id) && !isWorkerBlocked(restrictionMap, id, sector.id));
+                    readerId = pickBalancedWorker({ candidateIds: candidates, workersById: readerById, loadByWorker: readerLoad });
+                }
+            }
+
+            if (!readerId || !readerById.has(readerId)) {
+                errors.push(`Sector ${sector.numero}: no hay lector disponible para la regla ${source}.`);
+            }
+
+            const verificationGroup = template.verificationGroups.find((group) => group.sectorIds.includes(sector.id));
+            const inspectorId = verificationGroup
+                ? pickBalancedWorker({
+                    candidateIds: verificationGroup.inspectorIds.filter((id) => inspectorById.has(id)),
+                    workersById: inspectorById,
+                    loadByWorker: inspectorLoad,
+                })
+                : null;
+
+            if (inspectorId) {
+                summary.inspectors += 1;
+            } else if (calendarForRoute.adelantoVerificacion || calendarForRoute.verificacion) {
+                warnings.push(`Sector ${sector.numero}: no tiene inspector de verificación asignado.`);
+            }
+
+            const sectorRow = {
+                sectorId: sector.id,
+                sectorName: sector.nombre,
+                sectorNumber: sector.numero,
+                reader: readerId && readerById.has(readerId) ? {
+                    id: readerId,
+                    nombre: readerById.get(readerId).nombre,
+                } : null,
+                inspector: inspectorId ? {
+                    id: inspectorId,
+                    nombre: inspectorById.get(inspectorId).nombre,
+                } : null,
+                source,
+                exceptionReason,
+            };
+            sectorRows.push(sectorRow);
+            summary.totalSectors += 1;
+            if (source === 'fixed') summary.fixed += 1;
+            if (source === 'bonus') summary.bonus += 1;
+            if (source === 'free_rotation') summary.free += 1;
+            if (source === 'exception') summary.exceptions += 1;
+
+            const pushAssignment = ({ tipo, fecha, workerId, role }) => {
+                if (!fecha || !workerId || !workerById.has(workerId)) return;
+                const key = assignmentKey(sector.id, fecha, tipo);
+                const existing = existingMap.get(key);
+                const row = {
+                    key,
+                    fecha,
+                    tipo,
+                    sectorId: sector.id,
+                    trabajadorId: workerId,
+                    source,
+                    role,
+                    conflicto: existing ? {
+                        asignacionId: String(existing._id),
+                        trabajador: serializeWorker(existing.Trabajador),
+                        apoyo: Boolean(existing.apoyo),
+                    } : null,
+                };
+                assignments.push(row);
+            };
+
+            for (const tipo of READER_ASSIGNMENT_TYPES) {
+                pushAssignment({ tipo, fecha: calendarForRoute[tipo], workerId: readerId, role: 'reader' });
+            }
+            for (const tipo of INSPECTOR_ASSIGNMENT_TYPES) {
+                pushAssignment({ tipo, fecha: calendarForRoute[tipo], workerId: inspectorId, role: 'inspector' });
+            }
+        }
+
+        routes.push({
+            routeId: route.id,
+            routeNumber: route.numero ?? null,
+            calendar: {
+                lectura: calendarForRoute.lectura,
+                adelantoVerificacion: calendarForRoute.adelantoVerificacion,
+                verificacion: calendarForRoute.verificacion,
+                reparto: calendarForRoute.reparto,
+            },
+            sectors: sectorRows,
+        });
+    }
+
+    summary.totalAssignments = assignments.length;
+    summary.conflicts = assignments.filter((assignment) => assignment.conflicto).length;
+
+    return {
+        empresa,
+        month,
+        routes,
+        assignments,
+        rules: serializeRules(templateDoc, empresa),
+        exceptions: Array.from(exceptionBySector.values()),
+        summary,
+        errors,
+        warnings,
+    };
+};
+
 const obtenerCatalogoCreador = async (req, res) => {
     try {
-        const empresa = req.body?.empresa ? empresaSchema.parse(req.body.empresa) : null;
+        const source = req.method === 'GET' ? req.query : req.body;
+        const empresa = source?.empresa ? empresaSchema.parse(source.empresa) : null;
+        const month = source?.month ? monthSchema.parse(source.month) : null;
         const catalog = await loadCatalogData(empresa);
-        return res.status(200).json(catalog);
+        const template = empresa
+            ? await AsignacionPlantilla.findOne({ empresa: { $eq: empresa } }).lean()
+            : null;
+        const exceptions = empresa && month
+            ? await loadSavedExceptions(empresa, month)
+            : [];
+
+        return res.status(200).json({
+            ...catalog,
+            routes: catalog.rutas,
+            sectors: catalog.sectores,
+            rules: empresa ? serializeRules(template, empresa) : null,
+            exceptions: exceptions.map(serializeAssignmentException),
+            month,
+        });
     } catch (error) {
         return res.status(400).json({ message: 'No se pudo obtener el catálogo de asignaciones.' });
+    }
+};
+
+const generarPropuestaCreador = async (req, res) => {
+    const parsed = proposalSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+        return res.status(400).json({ message: 'Datos de propuesta inválidos.' });
+    }
+
+    try {
+        const proposal = await buildMonthlyAssignmentProposal(parsed.data);
+        return res.status(200).json(proposal);
+    } catch (error) {
+        console.error('Error al generar propuesta de asignaciones:', error.message);
+        return res.status(500).json({ message: 'No se pudo generar la propuesta de asignaciones.' });
+    }
+};
+
+const guardarExcepcionesCreador = async (req, res) => {
+    const parsed = saveExceptionsSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+        return res.status(400).json({ message: 'Datos de excepciones inválidos.' });
+    }
+
+    try {
+        const catalog = await loadCatalogData(parsed.data.empresa);
+        const sectorById = new Map(catalog.sectores.map((sector) => [sector.id, sector]));
+        const readerById = new Map(catalog.trabajadores.map((worker) => [worker.id, worker]));
+        const { errors, exceptions } = normalizeExceptionDrafts({
+            empresa: parsed.data.empresa,
+            month: parsed.data.month,
+            exceptions: parsed.data.exceptions,
+            sectorById,
+            readerById,
+        });
+
+        if (errors.length) {
+            return res.status(400).json({ message: 'Las excepciones tienen errores.', errors });
+        }
+
+        const sectorIds = exceptions.map((exception) => exception.sectorId);
+        await AssignmentException.deleteMany({
+            empresa: parsed.data.empresa,
+            month: parsed.data.month,
+            ...(sectorIds.length ? { sector: { $nin: sectorIds } } : {}),
+        });
+
+        if (exceptions.length) {
+            await AssignmentException.bulkWrite(exceptions.map((exception) => {
+                const update = {
+                    $set: {
+                        replacementWorker: exception.replacementWorkerId,
+                        reason: exception.reason,
+                        note: exception.note,
+                        updatedBy: req.authUser?._id,
+                    },
+                    $setOnInsert: {
+                        empresa: parsed.data.empresa,
+                        month: parsed.data.month,
+                        sector: exception.sectorId,
+                    },
+                };
+
+                if (exception.originalWorkerId) {
+                    update.$set.originalWorker = exception.originalWorkerId;
+                } else {
+                    update.$unset = { originalWorker: '' };
+                }
+
+                return {
+                    updateOne: {
+                        filter: {
+                            empresa: parsed.data.empresa,
+                            month: parsed.data.month,
+                            sector: exception.sectorId,
+                        },
+                        update,
+                        upsert: true,
+                    },
+                };
+            }));
+        }
+
+        const saved = await loadSavedExceptions(parsed.data.empresa, parsed.data.month);
+        return res.status(200).json({
+            message: 'Excepciones guardadas correctamente.',
+            exceptions: saved.map(serializeAssignmentException),
+        });
+    } catch (error) {
+        console.error('Error al guardar excepciones de asignación:', error.message);
+        return res.status(500).json({ message: 'No se pudieron guardar las excepciones.' });
     }
 };
 
@@ -828,6 +1446,14 @@ const guardarPlantillaCreador = async (req, res) => {
                 restrictions: template.restrictions.map((rule) => ({
                     trabajador: rule.trabajadorId,
                     sectores: rule.sectorIds,
+                })),
+                bonusGroup: {
+                    trabajadores: template.bonusGroup.workerIds,
+                    sectores: template.bonusGroup.sectorIds,
+                },
+                verificationGroups: template.verificationGroups.map((group) => ({
+                    inspectores: group.inspectorIds,
+                    sectores: group.sectorIds,
                 })),
                 updatedBy: req.authUser?._id,
             },
@@ -903,7 +1529,7 @@ const findExistingAssignment = async (sectorId, fecha, tipo) => {
             $gte: start,
             $lte: end,
         },
-    }).populate({ path: 'Trabajador', select: 'Nombre Rut cargo' });
+    }).populate({ path: 'Trabajador', select: 'Nombre Rut cargo empresa' });
 };
 
 const findExistingWorkerAssignmentsOnDate = async (trabajadorId, fecha) => {
@@ -938,10 +1564,10 @@ const confirmarCreadorAsignaciones = async (req, res) => {
 
     const [sectores, trabajadores] = await Promise.all([
         Sector.find({ empresa: { $eq: parsed.data.empresa } }).select('_id').lean(),
-        Trabajador.find({ cargo: { $ne: 'administracion' } }).select('_id').lean(),
+        Trabajador.find(buildCompanyWorkerFilter(parsed.data.empresa, ASSIGNABLE_ASSIGNMENT_FILTER)).select('_id cargo').lean(),
     ]);
     const sectorIds = new Set(sectores.map((sector) => String(sector._id)));
-    const workerIds = new Set(trabajadores.map((worker) => String(worker._id)));
+    const workerById = new Map(trabajadores.map((worker) => [String(worker._id), worker]));
     const errors = [];
     const seenKeys = new Set();
     const plans = [];
@@ -962,8 +1588,10 @@ const confirmarCreadorAsignaciones = async (req, res) => {
             errors.push(`Asignación ${index + 1}: sector inválido para ${parsed.data.empresa}.`);
             continue;
         }
-        if (!trabajadorId || !workerIds.has(trabajadorId)) {
-            errors.push(`Asignación ${index + 1}: trabajador inválido o no asignable.`);
+        const selectedWorker = trabajadorId ? workerById.get(trabajadorId) : null;
+        const expectedCargo = expectedCargoForAssignmentType(assignment.tipo);
+        if (!selectedWorker || selectedWorker.cargo !== expectedCargo) {
+            errors.push(`Asignación ${index + 1}: trabajador inválido para ${assignment.tipo}.`);
             continue;
         }
         if (!fecha) continue;
@@ -1036,6 +1664,8 @@ module.exports = {
     obtenerCatalogoCreador,
     obtenerFeriadosChilenos,
     obtenerPlantillaCreador,
+    generarPropuestaCreador,
+    guardarExcepcionesCreador,
     guardarPlantillaCreador,
     previsualizarCreadorAsignaciones,
     previsualizarAsignacionesManuales,

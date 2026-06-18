@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { ASSIGNMENT_TYPES } = require('./asignacionPlantilla.model');
 
 const asignacion_Mongoose = new mongoose.Schema({
     apoyo: { 
@@ -19,7 +20,7 @@ const asignacion_Mongoose = new mongoose.Schema({
     tipo: {
         type: String,
         required: true,
-        enum: ['lectura', 'reparto']
+        enum: ASSIGNMENT_TYPES
     },
     fecha_asignacion: {
         type: Date
@@ -29,4 +30,3 @@ const asignacion_Mongoose = new mongoose.Schema({
 const asignacion_MongooseModel = mongoose.model('asignacion', asignacion_Mongoose);
 
 module.exports = { asignacion_MongooseModel };
-

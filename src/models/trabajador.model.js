@@ -1,5 +1,7 @@
 const mongoose = require("mongoose");
 
+const EMPRESAS_TRABAJADOR = ['GasValpo', 'Comercial', 'Energas'];
+
 const trabajador_Mongoose = new mongoose.Schema({
     "Rut": { type: String, required: true ,unique:true},//
     "Nombre": { type: String, required: true },//
@@ -8,6 +10,7 @@ const trabajador_Mongoose = new mongoose.Schema({
         required: true,
         enum: ['administracion', 'lector', 'supervisor', 'inspector']
     },
+    "empresa": [{ type: String, enum: EMPRESAS_TRABAJADOR, required: false }],
     "perfil": { type: String, required: false },//implementar documentos?
     "apoyo": [{ type: mongoose.Schema.Types.ObjectId, required: true }],  //  
     "correo": { type: String, required: true },//
@@ -40,4 +43,4 @@ const trabajador_Mongoose = new mongoose.Schema({
 
 const trabajador_MongooseModel = mongoose.model('trabajador', trabajador_Mongoose);
 
-module.exports = { trabajador_MongooseModel };
+module.exports = { trabajador_MongooseModel, EMPRESAS_TRABAJADOR };

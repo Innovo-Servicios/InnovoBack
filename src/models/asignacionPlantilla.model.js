@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const ASSIGNMENT_TYPES = ['lectura', 'reparto','delantoVerificacion', 'verificacion'];
+const ASSIGNMENT_TYPES = ['lectura', 'adelantoVerificacion', 'verificacion', 'reparto'];
 
 const assignmentTypeField = {
     type: String,
@@ -41,6 +41,28 @@ const rotatingGroupSchema = new mongoose.Schema({
         type: [assignmentTypeField],
         default: ASSIGNMENT_TYPES,
     },
+}, { _id: false });
+
+const bonusGroupSchema = new mongoose.Schema({
+    trabajadores: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'trabajador',
+    }],
+    sectores: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'sector',
+    }],
+}, { _id: false });
+
+const verificationGroupSchema = new mongoose.Schema({
+    inspectores: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'trabajador',
+    }],
+    sectores: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'sector',
+    }],
 }, { _id: false });
 
 const leftoverWorkerSchema = new mongoose.Schema({
@@ -86,6 +108,17 @@ const asignacionPlantillaSchema = new mongoose.Schema({
             sectores: [],
             tipos: ASSIGNMENT_TYPES,
         }),
+    },
+    bonusGroup: {
+        type: bonusGroupSchema,
+        default: () => ({
+            trabajadores: [],
+            sectores: [],
+        }),
+    },
+    verificationGroups: {
+        type: [verificationGroupSchema],
+        default: [],
     },
     leftoverWorkers: {
         type: [leftoverWorkerSchema],

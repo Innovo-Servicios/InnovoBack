@@ -14,6 +14,14 @@ const ATE_OVERDUE_BATCH_SIZE = Number.parseInt(
     process.env.ATE_OVERDUE_NOTIFICATION_BATCH_SIZE || '100',
     10
 );
+const ATE_OVERDUE_NOTIFICATIONS_PAUSED_VALUES = new Set(['1', 'true', 'yes', 'on', 'si', 'sí']);
+
+const isAteOverdueNotificationsPaused = () =>
+    ATE_OVERDUE_NOTIFICATIONS_PAUSED_VALUES.has(
+        String(process.env.ATE_OVERDUE_NOTIFICATIONS_PAUSED || '')
+            .trim()
+            .toLowerCase()
+    );
 
 const buildAteOverdueWindow = (referenceDate = new Date()) => {
     const now = moment(referenceDate).tz(ATE_OVERDUE_TIMEZONE);
@@ -158,6 +166,17 @@ const dispatchAteOverdueNotifications = async ({
     io,
     referenceDate = new Date(),
 } = {}) => {
+    if (isAteOverdueNotificationsPaused()) {
+        console.log('Notificaciones de ATE atrasadas pausadas por configuración.');
+        return {
+            total: 0,
+            notified: 0,
+            skipped: 0,
+            failed: 0,
+            paused: true,
+        };
+    }
+
     const batchSize = Number.isFinite(ATE_OVERDUE_BATCH_SIZE)
         ? ATE_OVERDUE_BATCH_SIZE
         : 100;
@@ -201,4 +220,5 @@ module.exports = {
     buildOverdueMessage,
     dispatchAteOverdueNotifications,
     getOverdueDays,
+    isAteOverdueNotificationsPaused,
 };

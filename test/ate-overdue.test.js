@@ -9,7 +9,9 @@ const {
 const {
     buildOverdueAteReminderQuery,
     buildOverdueMessage,
+    dispatchAteOverdueNotifications,
     getOverdueDays,
+    isAteOverdueNotificationsPaused,
 } = require('../src/utils/ateOverdueNotifications.js');
 
 test('obtenerATE query returns pending ATE up to the consulted day', () => {
@@ -61,4 +63,26 @@ test('overdue reminder message reports days late', () => {
         buildOverdueMessage(ate, referenceDate),
         'Tienes una atención especial atrasada hace 2 días.'
     );
+});
+
+test('overdue reminder dispatch can be paused by configuration', async () => {
+    const previousValue = process.env.ATE_OVERDUE_NOTIFICATIONS_PAUSED;
+    process.env.ATE_OVERDUE_NOTIFICATIONS_PAUSED = 'true';
+
+    try {
+        assert.equal(isAteOverdueNotificationsPaused(), true);
+        assert.deepEqual(await dispatchAteOverdueNotifications(), {
+            total: 0,
+            notified: 0,
+            skipped: 0,
+            failed: 0,
+            paused: true,
+        });
+    } finally {
+        if (previousValue === undefined) {
+            delete process.env.ATE_OVERDUE_NOTIFICATIONS_PAUSED;
+        } else {
+            process.env.ATE_OVERDUE_NOTIFICATIONS_PAUSED = previousValue;
+        }
+    }
 });

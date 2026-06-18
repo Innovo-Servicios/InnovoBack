@@ -51,21 +51,8 @@ const resolveAteContext = async (direccion) => {
 };
 
 const formatAteContext = ({ sector, ruta }) => ({
-    sector: sector
-        ? {
-            _id: sector._id,
-            nombre: sector.sector,
-            numero: sector.NumeroSector ?? null,
-            ruta: ruta?.NumeroRuta ?? null,
-            empresa: sector.empresa ?? null,
-        }
-        : null,
-    ruta: ruta
-        ? {
-            _id: ruta._id,
-            numero: ruta.NumeroRuta ?? null,
-        }
-        : null,
+    sector: sector?.NumeroSector ?? null,
+    ruta: ruta?.NumeroRuta ?? null,
 });
 
 const buildAteResponse = ({ ate, direccion, tipo, trabajador, foto, sector, ruta }) => ({

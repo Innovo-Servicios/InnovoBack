@@ -10,7 +10,19 @@ const Token = require('../controllers/token.controller.js')
 const Sector = require('../controllers/sector.controller.js');
 const dayjs = require('dayjs');
 const isBetween = require('dayjs/plugin/isBetween');
+const moment = require('moment-timezone');
 dayjs.extend(isBetween);
+
+const CHILE_TZ = 'America/Santiago';
+
+const getStoredAssignmentDayRange = (value = new Date()) => {
+    const chileDate = moment.tz(value, CHILE_TZ).format('YYYY-MM-DD');
+
+    return {
+        assignmentStart: moment.utc(chileDate).startOf('day').toDate(),
+        assignmentEnd: moment.utc(chileDate).endOf('day').toDate()
+    };
+};
 
 const normalizeRequiredString = (value) => {
     if (typeof value !== 'string') {
@@ -513,52 +525,74 @@ const listadirecciones=async(req,res)=>{
                 return res.status(404).send('Trabajador no encontrado');
             }
 
-            const ultimoApoyoId = normalizeObjectId(trabajador.apoyo?.[trabajador.apoyo.length - 1]);
-            const lastapoyo = ultimoApoyoId ? await apoyo.findOne(
-                mongoose.sanitizeFilter({ _id: new mongoose.Types.ObjectId(ultimoApoyoId) })
-            ) : null;
-            const asignacion = await Asignacion.findOne(mongoose.sanitizeFilter({
+            const { assignmentStart, assignmentEnd } = getStoredAssignmentDayRange();
+            const asignaciones = await Asignacion.find({
                 Trabajador: new mongoose.Types.ObjectId(trabajadorId),
                 fecha_asignacion: {
-                    $gte: dayjs().startOf('day').subtract(3,'hours').toDate(),
-                    $lte: dayjs().endOf('day').subtract(3,'hours').toDate()
+                    $gte: assignmentStart,
+                    $lte: assignmentEnd
                 }
-            }));
-            if (!asignacion){
+            }).select('_id NumeroSector').lean();
+
+            const apoyos = await apoyo.find({
+                Trabajador: new mongoose.Types.ObjectId(trabajadorId),
+                fecha_inicio: { $lte: assignmentEnd },
+                fecha_fin: { $gte: assignmentStart }
+            })
+                .select('asignacion')
+                .populate({ path: 'asignacion', select: '_id NumeroSector' })
+                .lean();
+
+            const sectorIds = new Set();
+            for (const asignacion of asignaciones) {
+                const sectorId = normalizeObjectId(asignacion?.NumeroSector);
+                if (sectorId) {
+                    sectorIds.add(sectorId);
+                }
+            }
+
+            for (const apoyoActual of apoyos) {
+                const sectorId = normalizeObjectId(apoyoActual?.asignacion?.NumeroSector);
+                if (sectorId) {
+                    sectorIds.add(sectorId);
+                }
+            }
+
+            if (!sectorIds.size){
                 return res.status(204).send('No tienes asignaciones para hoy');
             }
 
-            const numeroSectorAsignacionId = normalizeObjectId(asignacion.NumeroSector);
-            if (!numeroSectorAsignacionId) {
-                return res.status(404).send('No tienes asignaciones para hoy');
-            }
-
             const direcciones = await direccion.find(
-                mongoose.sanitizeFilter({ NumeroSector: new mongoose.Types.ObjectId(numeroSectorAsignacionId) }),
-                { _id: 0, calle: 1 }
-            ).populate('NumeroMedidor','NumeroMedidor');
-            
-            
-            if (lastapoyo && dayjs().isBetween(dayjs(lastapoyo.fecha_inicio), dayjs(lastapoyo.fecha_fin), null, '[]')) {
-                const asignacionApoyoId = normalizeObjectId(lastapoyo.asignacion);
-                const ASIGNesapoyo = asignacionApoyoId ? await Asignacion.findOne(
-                    mongoose.sanitizeFilter({ _id: new mongoose.Types.ObjectId(asignacionApoyoId) })
-                ) : null;
-                if (ASIGNesapoyo) {
-                    const numeroSectorApoyoId = normalizeObjectId(ASIGNesapoyo.NumeroSector);
-                    if (numeroSectorApoyoId) {
-                        const direccionapoyo = await direccion.find(
-                            mongoose.sanitizeFilter({ NumeroSector: new mongoose.Types.ObjectId(numeroSectorApoyoId) }),
-                            { _id: 0, calle: 1 }
-                        ).populate('NumeroMedidor', 'NumeroMedidor -_id');
-                        direcciones.push(direccionapoyo);
+                {
+                    NumeroSector: {
+                        $in: Array.from(sectorIds).map((sectorId) => new mongoose.Types.ObjectId(sectorId))
                     }
-                }
-            }
-            const direcciones2 = direcciones.map((direccion) => {
-                return {"calle":direccion.calle, "_id":direccion.NumeroMedidor._id,"NumeroMedidor":direccion.NumeroMedidor.NumeroMedidor};
-                
-            });
+                },
+                { calle: 1, NumeroMedidor: 1 }
+            )
+                .populate({ path: 'NumeroMedidor', select: 'NumeroMedidor' })
+                .lean();
+
+            const direcciones2 = direcciones
+                .map((direccionActual) => {
+                    const medidorActual = direccionActual.NumeroMedidor;
+                    if (
+                        !medidorActual ||
+                        !medidorActual._id ||
+                        medidorActual.NumeroMedidor === undefined ||
+                        medidorActual.NumeroMedidor === null
+                    ) {
+                        return null;
+                    }
+
+                    return {
+                        calle: direccionActual.calle,
+                        _id: medidorActual._id,
+                        NumeroMedidor: medidorActual.NumeroMedidor
+                    };
+                })
+                .filter(Boolean);
+
             return res.send(direcciones2);
 
         }catch (error){
