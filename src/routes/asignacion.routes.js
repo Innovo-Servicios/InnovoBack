@@ -15,6 +15,7 @@ const {
 const { excelAsignaciones} = require('../controllers/excel.controller');
 const {
     exportarProgramacionAsignaciones,
+    exportarProgramacionAsignacionesPdf,
 } = require('../controllers/asignacionExport.controller.js');
 const { requireRole } = require('../middlewares/auth.middleware.js');
 const { uploadLimiter } = require('../middlewares/rateLimit.middleware.js');
@@ -33,6 +34,7 @@ router.post('/obtenerAsignacionDia', requireRole('administracion', 'supervisor')
 router.post('/vistaAsignaciones', requireRole('administracion', 'supervisor'), obtenerVistaAsignaciones)
 router.get('/exportar/programacion', requireRole('administracion', 'supervisor'), exportarProgramacionAsignaciones)
 router.post('/exportar/programacion', requireRole('administracion', 'supervisor'), exportarProgramacionAsignaciones)
+router.get('/exportar/programacion/pdf', requireRole('administracion', 'supervisor'), exportarProgramacionAsignacionesPdf)
 router.get('/feriados/:year', requireRole('administracion', 'supervisor'), obtenerFeriadosChilenos)
 router.get('/creador/catalogo', requireRole('administracion', 'supervisor'), obtenerCatalogoCreador)
 router.post('/creador/catalogo', requireRole('administracion', 'supervisor'), obtenerCatalogoCreador)

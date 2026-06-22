@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-// const {lectura_MongooseModel} = require('../models/lectura.model.js')
+const {lectura_MongooseModel} = require('../models/lectura.model.js')
 const { sector_MongooseModel: Sector } = require('../models/sector.model.js')
 const { Novedad } = require('../models/novedad.model.js')
 const { TipoNovedad } = require('../models/tipoNovedad.model.js')
@@ -14,15 +14,90 @@ const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
 const { buildAssetUrl, getAuthRut, isPrivilegedRequest } = require('../utils/security.js');
+const {
+    buildCalderaCorrectorLecturas,
+    hasCalderaCorrectorTag,
+    parseRequiredNumberField,
+} = require('../utils/correctorDirections.js');
+
+const findMedidorForNovedad = async ({ medidorId, numeroMedidor }) => {
+    if (medidorId && mongoose.isValidObjectId(String(medidorId))) {
+        const medidor = await medidor_MongooseModel.findById(String(medidorId));
+        if (medidor) {
+            return medidor;
+        }
+    }
+
+    const numeroMedidorTexto = String(numeroMedidor || '').trim();
+    if (!numeroMedidorTexto) {
+        return null;
+    }
+
+    const numeroMedidorNumerico = Number(numeroMedidorTexto);
+    if (Number.isFinite(numeroMedidorNumerico)) {
+        const medidor = await medidor_MongooseModel.findOne({
+            NumeroMedidor: { $eq: numeroMedidorNumerico }
+        });
+        if (medidor) {
+            return medidor;
+        }
+    }
+
+    const rawMedidor = await medidor_MongooseModel.collection.findOne({
+        NumeroMedidor: {
+            $in: [
+                numeroMedidorTexto,
+                numeroMedidorTexto.toUpperCase(),
+            ]
+        }
+    });
+
+    return rawMedidor?._id ? medidor_MongooseModel.hydrate(rawMedidor) : null;
+};
 
 const formatNovedadFotografia = (fotografia) => {
     if (!fotografia) return fotografia;
+    if (Array.isArray(fotografia)) {
+        return fotografia.map(formatNovedadFotografia);
+    }
     const stringPath = String(fotografia);
     const normalized = stringPath.toLowerCase();
     if (normalized.includes('verificacion')) {
         return buildAssetUrl('verificaciones', stringPath);
     }
     return buildAssetUrl('novedades', stringPath);
+};
+
+const toPlainNovedad = (novedad) => {
+    if (!novedad) {
+        return {};
+    }
+
+    return typeof novedad.toObject === 'function' ? novedad.toObject() : novedad;
+};
+
+const formatNovedadResponse = ({ novedad, direccion = null, trabajador = null }) => {
+    const plainNovedad = toPlainNovedad(novedad);
+
+    return {
+        id: plainNovedad._id,
+        TipoNovedad: plainNovedad.TipoNovedad,
+        Fotografia: formatNovedadFotografia(plainNovedad.Fotografia),
+        Lecturacorrecta: plainNovedad.Lecturacorrecta,
+        lecturaCaldera: plainNovedad.lecturaCaldera,
+        lecturaCorrector: plainNovedad.lecturaCorrector,
+        Comentario: plainNovedad.Comentario,
+        Fecha: plainNovedad.Fecha,
+        direccion: direccion ? direccion.calle : null,
+        coordenadas: direccion ? [direccion.LAT, direccion.LNG] : null,
+        emisor: trabajador ? {
+            Rut: trabajador.Rut,
+            _id: trabajador._id,
+            nombre: trabajador.Nombre,
+            cargo: trabajador.cargo,
+            correo: trabajador.correo,
+        } : null
+    };
 };
 
 const ensureCanAccessNovedad = async (req, novedad) => {
@@ -103,14 +178,26 @@ const obtenerNovedadTodos = async (req, res) => {
 
 const crearNovedad = async (req, res) => {      
     try {
-            const { TipoNovedadConsulta, idMedidor, Lecturacorrecta, Comentario } = req.body;
+            const {
+                TipoNovedadConsulta,
+                idMedidor,
+                _id: medidorId,
+                Lecturacorrecta,
+                Comentario,
+                lecturaCaldera,
+                lecturaCorrector,
+            } = req.body;
             let lecturacorrecta = 0;
             if(Lecturacorrecta){
                 lecturacorrecta= Lecturacorrecta;
             }
             
             let finalPath;
-            const medidor = await medidor_MongooseModel.findOne({ NumeroMedidor: { $eq: Number(idMedidor) } });
+            const finalPaths = [];
+            const medidor = await findMedidorForNovedad({
+                medidorId,
+                numeroMedidor: idMedidor,
+            });
             if (!medidor) {
                 return res.status(404).send('Medidor no encontrada.');
             }
@@ -123,17 +210,14 @@ const crearNovedad = async (req, res) => {
                 return res.status(404).send('Tipo de novedad no encontrado.');
             }
 
-            if (req.file){
-                const archivo = req.file;
+            const archivos = req.files?.length ? req.files : (req.file ? [req.file] : []);
+            if (archivos.length){
                 // console.log(archivo.mimetype)
                 const formatosPermitidos = [
                     'image/jpeg',
                     'image/png',
                     'image/jpg',
                 ];
-                if (!formatosPermitidos.includes(archivo.mimetype)) {
-                    return res.status(400).send('Formato de archivo no permitido: ' + archivo.mimetype);
-                }
                 let uploadPath;
                 if (Tipoexiste.value != 'Verificacion') {    
                     // return res.status(400).send('Falta la fotografía de la novedad.');
@@ -147,39 +231,97 @@ const crearNovedad = async (req, res) => {
                         fs.mkdirSync(uploadPath, { recursive: true });
                     }
                 }
-    
-                const fileName = `CL_${cliente.NumeroCliente}_${Tipoexiste.value}.jpg`;
-                if (archivo.mimetype === 'image/jpeg' || archivo.mimetype === 'image/png'|| archivo.mimetype === 'image/jpg') {
-                    // Procesar imágenes en memoria con sharp
-                    finalPath = path.join(uploadPath, path.basename(fileName)); // Renombrar extensión a .jpeg
-    
+
+                for (const [index, archivo] of archivos.entries()) {
+                    if (!formatosPermitidos.includes(archivo.mimetype)) {
+                        return res.status(400).send('Formato de archivo no permitido: ' + archivo.mimetype);
+                    }
+
+                    const fileSuffix = archivos.length > 1 ? `_${index + 1}` : '';
+                    const safeType = String(Tipoexiste.value || 'novedad').replace(/[^a-zA-Z0-9_-]/g, '_');
+                    const fileName = `CL_${cliente.NumeroCliente}_${safeType}_${Date.now()}${fileSuffix}.jpg`;
+                    const currentFinalPath = path.join(uploadPath, path.basename(fileName));
+
                     await sharp(archivo.buffer)
                         .resize(1024, 1024, { fit: 'inside' }) // Redimensiona manteniendo proporción
                         .toFormat('jpeg', { quality: 80 }) // Convierte a JPEG con calidad 80%
-                        .toFile(finalPath);
-                } else {
-                    // Guardar otros tipos de archivos directamente desde el buffer
-                    finalPath = path.join(uploadPath, path.basename(fileName));
-                    fs.writeFileSync(finalPath, archivo.buffer);
+                        .toFile(currentFinalPath);
+
+                    finalPaths.push(currentFinalPath);
                 }
             }
 
-            const direccion = await direccion_MongooseModel.findOne({ NumeroMedidor: { $eq: medidor._id } })
+            const direccion = await direccion_MongooseModel
+                .findOne({ NumeroMedidor: { $eq: medidor._id } })
+                .populate({
+                    path: 'NumeroSector',
+                    select: '_id NumeroSector NumeroRuta',
+                    populate: { path: 'NumeroRuta', select: '_id NumeroRuta' },
+                });
             if (!direccion) {
                 return res.status(404).send('Dirección no encontrada.');
             }
             const emisor = await trabajador_MongooseModel.findOne({ Rut: { $eq: getAuthRut(req) } });
+            if (!emisor) {
+                return res.status(404).send('Trabajador no encontrado.');
+            }
+
+            const isCalderaCorrector = hasCalderaCorrectorTag(direccion);
+            const lecturaCalderaNumber = parseRequiredNumberField(lecturaCaldera);
+            const lecturaCorrectorNumber = parseRequiredNumberField(lecturaCorrector);
+
+            if (isCalderaCorrector && (lecturaCalderaNumber === null || lecturaCorrectorNumber === null)) {
+                return res.status(400).send('Lecturas de caldera y corrector inválidas.');
+            }
+
+            if (isCalderaCorrector && (!direccion.NumeroSector || !direccion.NumeroSector.NumeroRuta)) {
+                return res.status(404).send('Sector o ruta no encontrados para la dirección.');
+            }
+
+            const novedadId = new mongoose.Types.ObjectId();
+            finalPath = finalPaths.length > 1 ? finalPaths : finalPaths[0];
+            const fecha = new Date();
             const nuevaNovedad = new Novedad({
+                _id: novedadId,
                 TipoNovedad: Tipoexiste._id,
                 emisor: emisor._id,
                 Fotografia: finalPath,
                 Lecturacorrecta:lecturacorrecta,
+                lecturaCaldera: isCalderaCorrector ? lecturaCalderaNumber : undefined,
+                lecturaCorrector: isCalderaCorrector ? lecturaCorrectorNumber : undefined,
                 Comentario,
                 direccion: direccion._id,
-                Fecha: new Date()
+                Fecha: fecha
             });
             await nuevaNovedad.save();
-            req.io.emit('actualizarNovedad', nuevaNovedad);
+
+            if (isCalderaCorrector) {
+                const lecturas = buildCalderaCorrectorLecturas({
+                    lecturaCaldera: lecturaCalderaNumber,
+                    lecturaCorrector: lecturaCorrectorNumber,
+                    fotoCaldera: finalPaths[0],
+                    fotoCorrector: finalPaths[1],
+                    fecha,
+                    medidorId: medidor._id,
+                    rutaId: direccion.NumeroSector.NumeroRuta._id,
+                    sectorId: direccion.NumeroSector._id,
+                    trabajadorId: emisor._id,
+                    novedadId,
+                });
+
+                try {
+                    await lectura_MongooseModel.insertMany(lecturas);
+                } catch (error) {
+                    await Novedad.deleteOne({ _id: novedadId }).catch(() => {});
+                    throw error;
+                }
+            }
+
+            req.io.emit('actualizarNovedad', formatNovedadResponse({
+                novedad: nuevaNovedad,
+                direccion,
+                trabajador: emisor,
+            }));
             res.status(201).json({
                 mensaje: 'Novedad creada exitosamente',
                 novedadId: nuevaNovedad._id
@@ -253,23 +395,7 @@ const obtenerUltimasNovedadesDelDia = async (req, res) => {
             const novedades = await Promise.all(novedadesList.map(async (novedad) => {
                 const direccion = await direccion_MongooseModel.findById(novedad.direccion);
                 const trabajador = await trabajador_MongooseModel.findById(novedad.emisor);
-                return {
-                    id: novedad._id,
-                    TipoNovedad: novedad.TipoNovedad,
-                    Fotografia: formatNovedadFotografia(novedad.Fotografia),
-                    Lecturacorrecta: novedad.Lecturacorrecta,
-                    Comentario: novedad.Comentario,
-                    Fecha: novedad.Fecha,
-                    direccion: direccion ? direccion.calle : null,
-                    coordenadas: direccion ? [direccion.LAT, direccion.LNG] : null,
-                    emisor: trabajador ? {
-                        Rut: trabajador.Rut,
-                        _id: trabajador._id,
-                        nombre: trabajador.Nombre,
-                        cargo: trabajador.cargo,
-                        correo: trabajador.correo,
-                    } : null
-                };
+                return formatNovedadResponse({ novedad, direccion, trabajador });
             }));
             res.status(200).send(novedades);
     } catch (error) {
@@ -284,5 +410,9 @@ module.exports = {
     modificarNovedad,
     borrarNovedad,
     obtenerNovedadTodos,
-    obtenerUltimasNovedadesDelDia
+    obtenerUltimasNovedadesDelDia,
+    _test: {
+        formatNovedadFotografia,
+        formatNovedadResponse,
+    }
 };

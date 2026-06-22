@@ -51,7 +51,7 @@ const resolveAteContext = async (direccion) => {
 };
 
 const formatAteContext = ({ sector, ruta }) => ({
-    sector: sector?.NumeroSector ?? null,
+    sector: sector?.sector ?? null,
     ruta: ruta?.NumeroRuta ?? null,
 });
 

@@ -23,6 +23,7 @@ const permiso= require('./permiso.routes.js');
 const excelRouter = require('./excel.routes.js');
 const assetsRouter = require('./assets.routes.js');
 const verificacionTerrenoRouter = require('./verificacionTerreno.routes.js');
+const botRouter = require('./bot.routes.js');
 const { requireAuth } = require('../middlewares/auth.middleware.js');
 
 module.exports = app => {
@@ -50,4 +51,5 @@ module.exports = app => {
     app.use('/excel', requireAuth, excelRouter);
     app.use('/assets', requireAuth, assetsRouter);
     app.use('/verificacionTerreno', requireAuth, verificacionTerrenoRouter);
+    app.use('/bot', botRouter);
 } 

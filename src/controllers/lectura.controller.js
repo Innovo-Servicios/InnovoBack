@@ -12,7 +12,7 @@ const crearlectura = async (req, res) => {
     const {  token } = req.body;
     const tokenValido = await Token.validartoken(token);
     if (tokenValido.valid){   
-        const { NumeroRuta, NumeroSector, NumeroMedidor, lectura, foto, clave} = req.body;
+        const { NumeroRuta, NumeroSector, NumeroMedidor, lectura, foto, clave, tipoLectura = 'normal', origen, novedad} = req.body;
         try{
             const trabajadorexistente = await trabajador.findOne({ Rut: { $eq: String(tokenValido.token.rut) } });
             const sectorexistente = await sector.findOne({ NumeroSector: { $eq: Number(NumeroSector) } })
@@ -36,6 +36,9 @@ const crearlectura = async (req, res) => {
                 lectura,
                 foto,
                 clave,
+                tipoLectura,
+                origen,
+                novedad,
                 NumeroMedidor: medidorexistente._id,
                 NumeroRuta: rutaexistente._id,
                 NumeroSector: sectorexistente._id,

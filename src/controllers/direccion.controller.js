@@ -568,7 +568,7 @@ const listadirecciones=async(req,res)=>{
                         $in: Array.from(sectorIds).map((sectorId) => new mongoose.Types.ObjectId(sectorId))
                     }
                 },
-                { calle: 1, NumeroMedidor: 1 }
+                { calle: 1, NumeroMedidor: 1, tags: 1 }
             )
                 .populate({ path: 'NumeroMedidor', select: 'NumeroMedidor' })
                 .lean();
@@ -588,7 +588,8 @@ const listadirecciones=async(req,res)=>{
                     return {
                         calle: direccionActual.calle,
                         _id: medidorActual._id,
-                        NumeroMedidor: medidorActual.NumeroMedidor
+                        NumeroMedidor: medidorActual.NumeroMedidor,
+                        tags: Array.isArray(direccionActual.tags) ? direccionActual.tags : []
                     };
                 })
                 .filter(Boolean);

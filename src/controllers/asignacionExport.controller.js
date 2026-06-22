@@ -6,6 +6,9 @@ const { sector_MongooseModel: Sector } = require('../models/sector.model.js');
 const {
     buildAssignmentProgramWorkbook,
 } = require('../utils/asignacionProgramacionExport.js');
+const {
+    buildAssignmentProgramPdf,
+} = require('../utils/asignacionProgramacionPdf.js');
 
 dayjs.extend(utc);
 
@@ -115,7 +118,34 @@ const exportarProgramacionAsignaciones = async (req, res) => {
     }
 };
 
+const exportarProgramacionAsignacionesPdf = async (req, res) => {
+    const { params, error } = parseExportParams(req);
+    if (error) {
+        return res.status(400).json({ message: error });
+    }
+
+    try {
+        const assignments = await loadAssignmentsForProgramacionExport(params);
+        const { buffer, fileName } = await buildAssignmentProgramPdf({
+            assignments,
+            empresa: params.empresa,
+            month: params.month,
+            zonal: params.zonal,
+        });
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', buildContentDisposition(fileName));
+        res.setHeader('Content-Length', buffer.length);
+
+        return res.status(200).send(buffer);
+    } catch (exportError) {
+        console.error('Error al exportar programación PDF:', exportError.message);
+        return res.status(500).json({ message: 'No se pudo exportar la programación PDF.' });
+    }
+};
+
 module.exports = {
     exportarProgramacionAsignaciones,
+    exportarProgramacionAsignacionesPdf,
     loadAssignmentsForProgramacionExport,
 };

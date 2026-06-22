@@ -28,6 +28,8 @@ export BOT_DOWNLOAD_FOLDER="/home/innovo/backend/GPI/storage/descargas"
 export BOT_BACKEND_URL="http://localhost:30001"
 export BOT_ALERT_EMAIL_TO="morbemon2012@gmail.com"
 export BOT_PROCESSED_STATE_FILE="/home/innovo/backend/GPI/storage/gmail-bot-processed-ates.json"
+export BOT_WHATSAPP_RESULT_RECIPIENT="56992960138"
+export BOT_WHATSAPP_WEBHOOK_TOKEN="secreto-compartido-con-el-backend"
 ```
 
 Validacion local sin conectar a Gmail ni crear ATE reales:
@@ -89,3 +91,10 @@ WHATSAPP_HEADLESS=true
 
 Al iniciar el backend por primera vez, escanea el QR que aparece en consola. Una
 vez autenticado, el log debe mostrar `WhatsApp listo`.
+
+## WhatsApp con resultado del bot Gmail
+
+Cada ejecucion de `scripts/bot.py` puede avisar el resultado al WhatsApp
+configurado en `BOT_WHATSAPP_RESULT_RECIPIENT`. El bot llama al backend local en
+`POST /bot/gmail-ate/whatsapp-result`, protegido con `BOT_WHATSAPP_WEBHOOK_TOKEN`,
+para reutilizar la misma sesion de WhatsApp Web.

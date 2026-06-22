@@ -6,7 +6,7 @@ const { requireRole } = require('../middlewares/auth.middleware.js');
 router.get('/', (req, res) => {
   res.send('Ruta de medidor');
 });
-router.post('/crearNovedad',uploadMemory.single('file'),crearNovedad);
+router.post('/crearNovedad',uploadMemory.array('file', 2),crearNovedad);
 router.post('/obtenerNovedadUno', obtenerNovedadUno);
 router.post('/modificarNovedad', requireRole('administracion', 'supervisor'), modificarNovedad);
 router.post('/borrarNovedad', requireRole('administracion', 'supervisor'), borrarNovedad);

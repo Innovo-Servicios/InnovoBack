@@ -134,6 +134,9 @@ const formatFileName = ({ empresa, month }) => {
     return `PROGRAMACION ${companyCode} ${monthName} ${parsed.year()}.xlsx`;
 };
 
+const formatPdfFileName = ({ empresa, month }) => formatFileName({ empresa, month })
+    .replace(/\.xlsx$/i, '.pdf');
+
 const formatWorksheetName = ({ month, zonal }) => {
     const parsed = dayjs.utc(`${month}-01`);
     const monthName = formatMonthName(parsed.month() + 1).slice(0, 3);
@@ -479,8 +482,11 @@ const buildAssignmentProgramWorkbook = ({ assignments = [], empresa, month, zona
 };
 
 module.exports = {
+    PROGRAM_COLUMNS,
     buildAssignmentProgramWorkbook,
     buildProgramacionRoutes,
     formatFileName,
+    formatPdfFileName,
     formatTitle,
+    getWeekdayName,
 };

@@ -19,10 +19,10 @@ const direccion_Mongoose = new mongoose.Schema({
         ref: 'medidor', 
     },
     TipoComentario: {type:mongoose.Schema.Types.ObjectId, ref: 'TipoComentario'},
+    tags: [{ type: String, trim: true }],
 
 });
 
 const direccion_MongooseModel = mongoose.model('direccion',direccion_Mongoose);
 
 module.exports={direccion_MongooseModel}
-

@@ -5,6 +5,17 @@ const lectura_Mongoose = new mongoose.Schema({
     foto: { type: String, required: true },
     clave: { type: String, required: true },
     fecha: { type: Date, required: true },
+    tipoLectura: {
+        type: String,
+        enum: ['normal', 'caldera', 'corrector'],
+        default: 'normal',
+    },
+    origen: { type: String, required: false },
+    novedad: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Novedad',
+        required: false,
+    },
     NumeroMedidor: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'medidor', 

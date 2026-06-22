@@ -28,14 +28,18 @@ const isAteWhatsAppEnabled = () =>
 const getAteWhatsAppAuthPath = () =>
   path.resolve(process.cwd(), process.env.WHATSAPP_AUTH_PATH || 'storage/whatsapp-auth');
 
-const getAteWhatsAppRecipientChatId = () => {
-  const rawRecipient = String(process.env.WHATSAPP_ATE_RECIPIENT || '56977090807').trim();
-  if (!rawRecipient) return null;
-  if (rawRecipient.includes('@')) return rawRecipient;
+const normalizeWhatsAppChatId = (rawRecipient) => {
+  const normalizedRecipient = String(rawRecipient || '').trim();
+  if (!normalizedRecipient) return null;
+  if (normalizedRecipient.includes('@')) return normalizedRecipient;
 
-  const onlyDigits = rawRecipient.replace(/\D/g, '');
+  const onlyDigits = normalizedRecipient.replace(/\D/g, '');
   return onlyDigits ? `${onlyDigits}@c.us` : null;
 };
+
+const getAteWhatsAppRecipient = () => process.env.WHATSAPP_ATE_RECIPIENT || '56977090807';
+
+const getAteWhatsAppRecipientChatId = () => normalizeWhatsAppChatId(getAteWhatsAppRecipient());
 
 const buildPuppeteerOptions = () => {
   const options = {
@@ -126,7 +130,11 @@ const initializeAteWhatsAppClient = () => {
   }
 };
 
-const sendAteWhatsAppMessage = async (message) => {
+const sendWhatsAppMessageToRecipient = async (
+  message,
+  recipient,
+  recipientLabel = 'WHATSAPP_ATE_RECIPIENT'
+) => {
   if (!isAteWhatsAppEnabled()) {
     return { sent: false, status: 'disabled' };
   }
@@ -140,18 +148,27 @@ const sendAteWhatsAppMessage = async (message) => {
     throw new Error(`WhatsApp no esta listo.${reason}`);
   }
 
-  const chatId = getAteWhatsAppRecipientChatId();
+  const chatId = normalizeWhatsAppChatId(recipient);
   if (!chatId) {
-    throw new Error('WHATSAPP_ATE_RECIPIENT no contiene un numero valido');
+    throw new Error(`${recipientLabel} no contiene un numero valido`);
   }
 
   await client.sendMessage(chatId, message);
   return { sent: true, chatId };
 };
 
+const sendAteWhatsAppMessage = async (message, options = {}) =>
+  sendWhatsAppMessageToRecipient(
+    message,
+    options.recipient ?? getAteWhatsAppRecipient(),
+    options.recipientLabel || 'WHATSAPP_ATE_RECIPIENT'
+  );
+
 module.exports = {
   getAteWhatsAppRecipientChatId,
   initializeAteWhatsAppClient,
   isAteWhatsAppEnabled,
+  normalizeWhatsAppChatId,
   sendAteWhatsAppMessage,
+  sendWhatsAppMessageToRecipient,
 };
