@@ -4,20 +4,33 @@ const mongoose = require('mongoose');
 const path = require('node:path');
 const { CategoriaDocumentoEmpresa } = require('../models/categoriaDocumentoEmpresa.model.js');
 const { DocumentoEmpresa } = require('../models/documentoEmpresa.model.js');
+const { notificaciones_MongooseModel: Notificacion } = require('../models/notificacion.model.js');
 const { notificacion_validacion_MongooseModel: NotificacionValidacion } = require('../models/notificacion_validacion.model.js');
+const { notificacion_vista_MongooseModel: NotificacionVista } = require('../models/notificacion_vista.model.js');
 const { trabajador_MongooseModel: Trabajador } = require('../models/trabajador.model.js');
 const { Rol } = require('../models/rol.model.js');
+const { createCompanyDocumentSignatureNotification } = require('./notificaciones.controller.js');
 const {
+    buildDefaultApprovals,
+    buildVersionedDocumentCode,
     deleteSavedFile,
     canAccessCompanyDocument,
     buildWorkerVisibleCompanyDocumentQuery,
     ensureCategoryDirectory,
+    getApprovalSummary,
+    getDigitalSignatureSummary,
     getExpirationStatus,
+    normalizeDocumentCode,
     normalizeName,
     resolveCompanyDocumentPath,
     saveCompanyDocumentFile,
     slugifyCategory,
 } = require('../services/companyDocuments.service.js');
+const {
+    buildCompanyDocumentEvidence,
+    buildEvidenceCsv,
+    buildEvidencePdf,
+} = require('../services/companyDocumentEvidence.service.js');
 
 const objectId = (value) => mongoose.isValidObjectId(value) ? String(value) : null;
 const parseJson = (value, fallback) => {
@@ -31,6 +44,102 @@ const parseOptionalDate = (value) => {
     return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 };
 const requestUserId = (req) => req.authUser?._id;
+const parseBoolean = (value) =>
+    value === true ||
+    value === 'true' ||
+    value === '1' ||
+    value === 1 ||
+    value === 'on';
+
+const parseList = (value) => {
+    const parsed = parseJson(value, value);
+    if (Array.isArray(parsed)) return parsed;
+    if (typeof parsed !== 'string') return [];
+    return parsed.split(',').map((item) => item.trim()).filter(Boolean);
+};
+
+const normalizeMatrixRelations = (value) => parseList(value)
+    .map((item) => {
+        if (typeof item === 'string') {
+            return { codigo: normalizeDocumentCode(item), nombre: '', descripcion: '' };
+        }
+        return {
+            codigo: normalizeDocumentCode(item?.codigo),
+            nombre: normalizeName(item?.nombre),
+            descripcion: normalizeName(item?.descripcion),
+        };
+    })
+    .filter((item) => item.codigo);
+
+const normalizeDocumentRelations = (value) => parseList(value)
+    .map((item) => ({
+        documento: objectId(typeof item === 'string' ? item : item?.documentoId || item?.documento),
+        tipoRelacion: ['matriz', 'referencia', 'reemplaza', 'anexo', 'otro'].includes(item?.tipoRelacion)
+            ? item.tipoRelacion
+            : 'referencia',
+        descripcion: normalizeName(item?.descripcion),
+    }))
+    .filter((item) => item.documento);
+
+const normalizeResponsible = (body = {}, previous = {}) => ({
+    nombre: normalizeName(body.responsableNombre) ||
+        normalizeName(previous?.nombre) ||
+        'Paola Olivares',
+    cargo: normalizeName(body.responsableCargo) ||
+        normalizeName(previous?.cargo) ||
+        'Prevencion de Riesgos',
+});
+
+const buildControlChange = ({ version, descripcion, actor }) => ({
+    version,
+    descripcion: normalizeName(descripcion) || `Creacion de version ${version}`,
+    autor: actor?._id,
+    nombreAutor: normalizeName(actor?.Nombre),
+});
+
+const normalizeApprovalRequest = (body) => {
+    if (!parseBoolean(body.requiereAprobacion)) return [];
+    return buildDefaultApprovals();
+};
+
+const nextGeneratedDocumentCode = async (prefix = 'SGI') => {
+    const normalizedPrefix = normalizeDocumentCode(prefix) || 'SGI';
+    const documents = await DocumentoEmpresa.find({
+        codigoBase: { $regex: `^${normalizedPrefix}-\\d+$` },
+    }).select('codigoBase').lean();
+    const next = documents.reduce((max, document) => {
+        const match = String(document.codigoBase || '').match(/-(\d+)$/);
+        const value = match ? Number.parseInt(match[1], 10) : 0;
+        return Number.isFinite(value) ? Math.max(max, value) : max;
+    }, 0) + 1;
+    return `${normalizedPrefix}-${String(next).padStart(3, '0')}`;
+};
+
+const resolveDocumentCode = async ({ body, category, previous, version }) => {
+    const base = normalizeDocumentCode(body.codigoBase || body.codigoDocumento) ||
+        normalizeDocumentCode(previous?.codigoBase) ||
+        await nextGeneratedDocumentCode(category?.slug?.startsWith('sgi') ? 'SGI' : 'DOC');
+    return {
+        codigoBase: base,
+        codigoVersionado: buildVersionedDocumentCode(base, version),
+    };
+};
+
+const normalizeApprovalRecordForClient = (approval) => ({
+    tipo: approval.tipo,
+    estado: approval.estado,
+    aprobadorId: approval.aprobador ? String(approval.aprobador._id || approval.aprobador) : null,
+    nombre: approval.nombre || '',
+    rut: approval.rut || '',
+    cargo: approval.cargo || '',
+    comentario: approval.comentario || '',
+    firmadoAt: approval.firmadoAt || null,
+});
+
+const canPublishDocument = (document) => {
+    if (!document.requiereAprobacion) return true;
+    return getApprovalSummary(document.aprobaciones || []).approved;
+};
 
 const getValidationState = (validation) => {
     if (!validation) return 'pendiente';
@@ -62,6 +171,12 @@ const serializeCategory = (category, count = undefined) => ({
 
 const serializeDocument = (document, validationMap = new Map()) => {
     const category = document.categoria;
+    const effectiveValidationMap = new Map(
+        Array.from(validationMap.entries()).map(([key, validation]) => [
+            key,
+            { ...validation, estado: getValidationState(validation) },
+        ])
+    );
     const physical = (document.firmantesFisicos || []).map((signer) => ({
         id: String(signer._id),
         tipo: signer.tipo,
@@ -73,7 +188,7 @@ const serializeDocument = (document, validationMap = new Map()) => {
         firmadoAt: signer.firmadoAt || null,
     }));
     const digital = (document.firmantesDigitales || []).map((signer) => {
-        const validation = validationMap.get(String(signer.validacion || ''));
+        const validation = effectiveValidationMap.get(String(signer.validacion || ''));
         return {
             id: String(signer._id),
             trabajadorId: String(signer.trabajador?._id || signer.trabajador),
@@ -89,10 +204,16 @@ const serializeDocument = (document, validationMap = new Map()) => {
         };
     });
     const completed = physical.filter(({ estado }) => estado === 'firmado').length;
+    const digitalSummary = getDigitalSignatureSummary(
+        document.firmantesDigitales || [],
+        effectiveValidationMap
+    );
     return {
         id: String(document._id),
         serieId: document.serieId,
         version: document.version,
+        codigoBase: document.codigoBase || '',
+        codigoVersionado: document.codigoVersionado || '',
         documentoAnteriorId: document.documentoAnterior ? String(document.documentoAnterior) : null,
         categoria: category && typeof category === 'object'
             ? serializeCategory(category)
@@ -100,6 +221,42 @@ const serializeDocument = (document, validationMap = new Map()) => {
         titulo: document.titulo,
         descripcion: document.descripcion || '',
         esGlobal: document.esGlobal === true,
+        requiereAprobacion: document.requiereAprobacion === true,
+        requiereFirmaDigital: document.requiereFirmaDigital === true,
+        responsableSistemaGestion: {
+            nombre: document.responsableSistemaGestion?.nombre || '',
+            cargo: document.responsableSistemaGestion?.cargo || '',
+        },
+        aprobaciones: (document.aprobaciones || []).map(normalizeApprovalRecordForClient),
+        aprobacion: getApprovalSummary(document.aprobaciones || []),
+        controlCambios: (document.controlCambios || []).map((change) => ({
+            version: change.version,
+            fecha: change.fecha || null,
+            descripcion: change.descripcion,
+            autorId: change.autor ? String(change.autor._id || change.autor) : null,
+            nombreAutor: change.nombreAutor || '',
+        })),
+        documentosRelacionados: (document.documentosRelacionados || []).map((relation) => ({
+            documentoId: String(relation.documento?._id || relation.documento),
+            tipoRelacion: relation.tipoRelacion,
+            descripcion: relation.descripcion || '',
+            titulo: relation.documento?.titulo || '',
+            codigoVersionado: relation.documento?.codigoVersionado || '',
+        })),
+        matricesRelacionadas: (document.matricesRelacionadas || []).map((matrix) => ({
+            codigo: matrix.codigo,
+            nombre: matrix.nombre || '',
+            descripcion: matrix.descripcion || '',
+        })),
+        publicadoAt: document.publicadoAt || null,
+        difusion: {
+            estado: document.difusion?.estado || 'no_requerida',
+            ultimaNotificacionId: document.difusion?.ultimaNotificacion
+                ? String(document.difusion.ultimaNotificacion)
+                : null,
+            difundidoAt: document.difusion?.difundidoAt || null,
+            alcanceDescripcion: document.difusion?.alcanceDescripcion || '',
+        },
         fechaEmision: document.fechaEmision || null,
         fechaVencimiento: document.fechaVencimiento || null,
         diasAviso: document.diasAviso,
@@ -114,6 +271,7 @@ const serializeDocument = (document, validationMap = new Map()) => {
         firmantesFisicos: physical,
         firmantesDigitales: digital,
         firmas: { completadas: completed, total: physical.length },
+        firmasDigitales: digitalSummary,
         createdAt: document.createdAt,
         updatedAt: document.updatedAt,
     };
@@ -163,6 +321,46 @@ const buildPhysicalSigners = async (rawSigners, actorId) => {
     }
     return result;
 };
+
+const getTargetWorkers = async ({ objetivo, cargo, roles }) => {
+    const objetivos = parseList(objetivo);
+    const cargos = parseList(cargo);
+    const roleIds = parseList(roles).map(objectId).filter(Boolean);
+
+    if (objetivos.includes('all')) {
+        return Trabajador.find();
+    }
+
+    if (objetivos.length > 0) {
+        return Trabajador.find({ Rut: { $in: objetivos } });
+    }
+
+    if (roleIds.length > 0) {
+        return Trabajador.find({ rol: { $in: roleIds } });
+    }
+
+    if (cargos.length > 0) {
+        return Trabajador.find({
+            $or: [
+                { arquetipo: { $in: cargos } },
+                { arquetipo: { $exists: false }, cargo: { $in: cargos } },
+            ],
+        });
+    }
+
+    return [];
+};
+
+const buildDefaultDocumentSignatureCopy = (document) => ({
+    titulo: `Firma requerida: ${document.codigoVersionado || document.titulo}`,
+    mensaje: 'Debes revisar y aceptar este documento actualizado en App Innovo.',
+    contenido: [
+        `Documento: ${document.titulo}`,
+        document.codigoVersionado ? `Codigo: ${document.codigoVersionado}` : null,
+        `Version: ${document.version}`,
+        'Al firmar declaras recepcion, difusion, porte permanente, disponibilidad, conocimiento, entendimiento y responsabilidad sobre el documento.',
+    ].filter(Boolean).join('\n'),
+});
 
 const listCategories = async (req, res) => {
     try {
@@ -248,7 +446,7 @@ const listDocuments = async (req, res) => {
         const query = {};
         if (objectId(req.query.categoria)) query.categoria = req.query.categoria;
         if (['true', 'false'].includes(req.query.esGlobal)) query.esGlobal = req.query.esGlobal === 'true';
-        if (['vigente', 'reemplazado', 'archivado'].includes(req.query.estado)) query.estado = req.query.estado;
+        if (['borrador', 'pendiente_aprobacion', 'vigente', 'reemplazado', 'archivado'].includes(req.query.estado)) query.estado = req.query.estado;
         else query.estado = { $ne: 'archivado' };
         const search = normalizeName(req.query.q);
         if (search) query.$or = [
@@ -256,7 +454,7 @@ const listDocuments = async (req, res) => {
             { descripcion: { $regex: search, $options: 'i' } },
         ];
         const [documents, total] = await Promise.all([
-            DocumentoEmpresa.find(query).populate('categoria').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+            DocumentoEmpresa.find(query).populate(['categoria', 'documentosRelacionados.documento']).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
             DocumentoEmpresa.countDocuments(query),
         ]);
         const validations = await validationMapForDocuments(documents);
@@ -275,11 +473,37 @@ const listDocuments = async (req, res) => {
 const listAvailableDocuments = async (req, res) => {
     try {
         const documents = await DocumentoEmpresa.find(buildWorkerVisibleCompanyDocumentQuery())
-            .populate('categoria').sort({ createdAt: -1 }).lean();
+            .populate('categoria')
+            .sort({ serieId: 1, version: -1, createdAt: -1 })
+            .lean();
+        const latestBySeries = Array.from(
+            documents.reduce((map, document) => {
+                if (!map.has(document.serieId)) map.set(document.serieId, document);
+                return map;
+            }, new Map()).values()
+        ).sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+        const workerId = requestUserId(req);
+        const validations = workerId
+            ? await NotificacionValidacion.find({
+                trabajador: workerId,
+                documentoEmpresa: { $in: latestBySeries.map((document) => document._id) },
+            }).lean()
+            : [];
+        const validationByDocument = new Map(validations.map((validation) => [
+            String(validation.documentoEmpresa),
+            validation,
+        ]));
 
-        return res.json(documents.map((document) => ({
+        return res.json(latestBySeries.map((document) => {
+            const validation = validationByDocument.get(String(document._id));
+            const digitalSigner = (document.firmantesDigitales || [])
+                .find((signer) => String(signer.trabajador) === String(workerId));
+            return {
             id: String(document._id),
             esGlobal: true,
+            serieId: document.serieId,
+            codigoBase: document.codigoBase || '',
+            codigoVersionado: document.codigoVersionado || '',
             titulo: document.titulo,
             descripcion: document.descripcion || '',
             categoria: document.categoria ? {
@@ -287,6 +511,24 @@ const listAvailableDocuments = async (req, res) => {
                 nombre: document.categoria.nombre,
             } : null,
             version: document.version,
+            requiereFirmaDigital: document.requiereFirmaDigital === true,
+            firmaDigital: validation ? {
+                required: true,
+                notificacionId: digitalSigner?.notificacion ? String(digitalSigner.notificacion) : null,
+                validacionId: String(validation._id),
+                estado: getValidationState(validation),
+                firmadoAt: validation.firmadoAt || null,
+                aceptadoAt: validation.aceptadoAt || null,
+                expiresAt: validation.expiresAt || null,
+            } : {
+                required: document.requiereFirmaDigital === true,
+                notificacionId: null,
+                validacionId: null,
+                estado: document.requiereFirmaDigital ? 'pendiente' : 'no_requerida',
+                firmadoAt: null,
+                aceptadoAt: null,
+                expiresAt: null,
+            },
             fechaEmision: document.fechaEmision || null,
             fechaVencimiento: document.fechaVencimiento || null,
             estadoVencimiento: getExpirationStatus(document),
@@ -298,7 +540,8 @@ const listAvailableDocuments = async (req, res) => {
             },
             createdAt: document.createdAt,
             updatedAt: document.updatedAt,
-        })));
+            };
+        }));
     } catch (error) {
         return res.status(500).json({ message: 'No se pudieron cargar los documentos globales' });
     }
@@ -307,9 +550,9 @@ const listAvailableDocuments = async (req, res) => {
 const getDocument = async (req, res) => {
     const id = objectId(req.params.id);
     if (!id) return res.status(400).json({ message: 'Documento inválido' });
-    const document = await DocumentoEmpresa.findById(id).populate('categoria');
+    const document = await DocumentoEmpresa.findById(id).populate(['categoria', 'documentosRelacionados.documento']);
     if (!document) return res.status(404).json({ message: 'Documento no encontrado' });
-    const versions = await DocumentoEmpresa.find({ serieId: document.serieId }).populate('categoria').sort({ version: -1 });
+    const versions = await DocumentoEmpresa.find({ serieId: document.serieId }).populate(['categoria', 'documentosRelacionados.documento']).sort({ version: -1 });
     const validations = await validationMapForDocuments(versions);
     return res.json({
         ...serializeDocument(document, validations),
@@ -325,6 +568,8 @@ const createDocument = async (req, res) => {
     const fechaVencimiento = parseOptionalDate(req.body.fechaVencimiento);
     const diasAviso = Number.parseInt(req.body.diasAviso, 10) || 30;
     const esGlobal = req.body.esGlobal === true || req.body.esGlobal === 'true';
+    const requiereFirmaDigital = parseBoolean(req.body.requiereFirmaDigital);
+    const approvals = normalizeApprovalRequest(req.body);
     if (!categoryId || titulo.length < 2 || fechaEmision === undefined || fechaVencimiento === undefined || diasAviso < 1 || diasAviso > 365) {
         return res.status(400).json({ message: 'Datos del documento inválidos' });
     }
@@ -333,16 +578,37 @@ const createDocument = async (req, res) => {
     let saved;
     try {
         saved = await saveCompanyDocumentFile({ categorySlug: category.slug, file: req.file });
+        const code = await resolveDocumentCode({ body: req.body, category, version: 1 });
         const physical = esGlobal
             ? []
             : await buildPhysicalSigners(parseJson(req.body.firmantesFisicos, []), requestUserId(req));
         const document = await DocumentoEmpresa.create({
             serieId: crypto.randomUUID(),
             version: 1,
+            ...code,
             categoria: category._id,
             titulo,
             descripcion: normalizeName(req.body.descripcion),
             esGlobal,
+            requiereAprobacion: approvals.length > 0,
+            requiereFirmaDigital,
+            responsableSistemaGestion: normalizeResponsible(req.body),
+            aprobaciones: approvals,
+            controlCambios: [
+                buildControlChange({
+                    version: 1,
+                    descripcion: req.body.motivoCambio || req.body.controlCambio || 'Creacion inicial del documento',
+                    actor: req.authUser,
+                }),
+            ],
+            documentosRelacionados: normalizeDocumentRelations(req.body.documentosRelacionados),
+            matricesRelacionadas: normalizeMatrixRelations(req.body.matricesRelacionadas),
+            estado: approvals.length > 0 ? 'pendiente_aprobacion' : 'vigente',
+            publicadoAt: approvals.length > 0 ? undefined : new Date(),
+            difusion: {
+                estado: requiereFirmaDigital ? 'pendiente' : 'no_requerida',
+                alcanceDescripcion: normalizeName(req.body.alcanceDescripcion),
+            },
             fechaEmision,
             fechaVencimiento,
             diasAviso,
@@ -351,7 +617,7 @@ const createDocument = async (req, res) => {
             creadoPor: requestUserId(req),
             actualizadoPor: requestUserId(req),
         });
-        await document.populate('categoria');
+        await document.populate(['categoria', 'documentosRelacionados.documento']);
         req.io?.to('permission:documentos_empresa.ver').emit('documentosEmpresaActualizados', { id: String(document._id) });
         return res.status(201).json(serializeDocument(document));
     } catch (error) {
@@ -364,7 +630,9 @@ const updateDocument = async (req, res) => {
     const id = objectId(req.params.id);
     const document = id ? await DocumentoEmpresa.findById(id).populate('categoria') : null;
     if (!document) return res.status(404).json({ message: 'Documento no encontrado' });
-    if (document.estado !== 'vigente') return res.status(409).json({ message: 'Solo la versión vigente se puede editar' });
+    if (!['vigente', 'pendiente_aprobacion', 'borrador'].includes(document.estado)) {
+        return res.status(409).json({ message: 'Solo la versión vigente o pendiente se puede editar' });
+    }
     const titulo = req.body.titulo === undefined ? document.titulo : normalizeName(req.body.titulo);
     const emission = req.body.fechaEmision === undefined ? document.fechaEmision : parseOptionalDate(req.body.fechaEmision);
     const expiration = req.body.fechaVencimiento === undefined ? document.fechaVencimiento : parseOptionalDate(req.body.fechaVencimiento);
@@ -379,6 +647,22 @@ const updateDocument = async (req, res) => {
     document.fechaVencimiento = expiration;
     document.diasAviso = warningDays;
     document.actualizadoPor = requestUserId(req);
+    if (req.body.responsableNombre !== undefined || req.body.responsableCargo !== undefined) {
+        document.responsableSistemaGestion = normalizeResponsible(req.body, document.responsableSistemaGestion);
+    }
+    if (req.body.documentosRelacionados !== undefined) {
+        document.documentosRelacionados = normalizeDocumentRelations(req.body.documentosRelacionados);
+    }
+    if (req.body.matricesRelacionadas !== undefined) {
+        document.matricesRelacionadas = normalizeMatrixRelations(req.body.matricesRelacionadas);
+    }
+    if (req.body.requiereFirmaDigital !== undefined && (document.firmantesDigitales || []).length === 0) {
+        document.requiereFirmaDigital = parseBoolean(req.body.requiereFirmaDigital);
+        document.difusion.estado = document.requiereFirmaDigital ? 'pendiente' : 'no_requerida';
+    }
+    if (req.body.alcanceDescripcion !== undefined) {
+        document.difusion.alcanceDescripcion = normalizeName(req.body.alcanceDescripcion);
+    }
     if (expirationChanged) {
         document.ultimoHitoAvisado = 0;
         document.vencimientoAvisado = undefined;
@@ -414,21 +698,73 @@ const renewDocument = async (req, res) => {
     const warningDays = req.body.diasAviso === undefined
         ? previous.diasAviso
         : Number.parseInt(req.body.diasAviso, 10);
+    const approvalRequired = req.body.requiereAprobacion === undefined
+        ? previous.requiereAprobacion === true
+        : parseBoolean(req.body.requiereAprobacion);
+    const approvals = approvalRequired ? buildDefaultApprovals() : [];
+    const requiereFirmaDigital = req.body.requiereFirmaDigital === undefined
+        ? previous.requiereFirmaDigital === true
+        : parseBoolean(req.body.requiereFirmaDigital);
     if (issueDate === undefined || expirationDate === undefined || warningDays < 1 || warningDays > 365) {
         return res.status(400).json({ message: 'Fechas o anticipación de renovación inválidas' });
     }
     let saved;
     let created;
     try {
+        const nextVersion = previous.version + 1;
         saved = await saveCompanyDocumentFile({ categorySlug: previous.categoria.slug, file: req.file });
+        const code = await resolveDocumentCode({
+            body: req.body,
+            category: previous.categoria,
+            previous,
+            version: nextVersion,
+        });
+        const previousChanges = (previous.controlCambios || []).map((change) => (
+            typeof change.toObject === 'function' ? change.toObject() : change
+        ));
+        const nextDocumentRelations = req.body.documentosRelacionados === undefined
+            ? (previous.documentosRelacionados || []).map((relation) => ({
+                documento: relation.documento,
+                tipoRelacion: relation.tipoRelacion,
+                descripcion: relation.descripcion,
+            }))
+            : normalizeDocumentRelations(req.body.documentosRelacionados);
+        const nextMatrixRelations = req.body.matricesRelacionadas === undefined
+            ? (previous.matricesRelacionadas || []).map((matrix) => ({
+                codigo: matrix.codigo,
+                nombre: matrix.nombre,
+                descripcion: matrix.descripcion,
+            }))
+            : normalizeMatrixRelations(req.body.matricesRelacionadas);
         created = await DocumentoEmpresa.create({
             serieId: previous.serieId,
-            version: previous.version + 1,
+            version: nextVersion,
+            ...code,
             documentoAnterior: previous._id,
             categoria: previous.categoria._id,
             titulo: normalizeName(req.body.titulo) || previous.titulo,
             descripcion: req.body.descripcion === undefined ? previous.descripcion : normalizeName(req.body.descripcion),
             esGlobal: previous.esGlobal === true,
+            requiereAprobacion: approvalRequired,
+            requiereFirmaDigital,
+            responsableSistemaGestion: normalizeResponsible(req.body, previous.responsableSistemaGestion),
+            aprobaciones: approvals,
+            controlCambios: [
+                ...previousChanges,
+                buildControlChange({
+                    version: nextVersion,
+                    descripcion: req.body.motivoCambio || req.body.controlCambio || `Renovacion a version ${nextVersion}`,
+                    actor: req.authUser,
+                }),
+            ],
+            documentosRelacionados: nextDocumentRelations,
+            matricesRelacionadas: nextMatrixRelations,
+            estado: approvalRequired ? 'pendiente_aprobacion' : 'vigente',
+            publicadoAt: approvalRequired ? undefined : new Date(),
+            difusion: {
+                estado: requiereFirmaDigital ? 'pendiente' : 'no_requerida',
+                alcanceDescripcion: normalizeName(req.body.alcanceDescripcion) || previous.difusion?.alcanceDescripcion || '',
+            },
             fechaEmision: issueDate,
             fechaVencimiento: expirationDate,
             diasAviso: warningDays,
@@ -445,10 +781,12 @@ const renewDocument = async (req, res) => {
             creadoPor: requestUserId(req),
             actualizadoPor: requestUserId(req),
         });
-        await created.populate('categoria');
-        previous.estado = 'reemplazado';
-        previous.actualizadoPor = requestUserId(req);
-        await previous.save();
+        await created.populate(['categoria', 'documentosRelacionados.documento']);
+        if (!approvalRequired) {
+            previous.estado = 'reemplazado';
+            previous.actualizadoPor = requestUserId(req);
+            await previous.save();
+        }
         req.io?.to('permission:documentos_empresa.ver').emit('documentosEmpresaActualizados', { id: String(created._id) });
         return res.status(201).json(serializeDocument(created));
     } catch (error) {
@@ -456,6 +794,213 @@ const renewDocument = async (req, res) => {
         await deleteSavedFile(saved?.absolutePath);
         return res.status(error.status || 500).json({ message: error.message || 'No se pudo renovar el documento' });
     }
+};
+
+const approveDocument = async (req, res) => {
+    const id = objectId(req.params.id);
+    const document = id ? await DocumentoEmpresa.findById(id).populate('categoria') : null;
+    if (!document) return res.status(404).json({ message: 'Documento no encontrado' });
+    if (!document.requiereAprobacion) {
+        return res.status(409).json({ message: 'Este documento no requiere aprobación formal' });
+    }
+
+    const approvalType = String(req.body.tipo || '').trim().toLowerCase();
+    if (!['gerencia', 'prevencion'].includes(approvalType)) {
+        return res.status(400).json({ message: 'Tipo de aprobación inválido' });
+    }
+    const nextState = req.body.estado === 'rechazado' || req.body.aprobado === false
+        ? 'rechazado'
+        : 'aprobado';
+    const approvals = document.aprobaciones?.length ? document.aprobaciones : buildDefaultApprovals();
+    const approval = approvals.find((item) => item.tipo === approvalType);
+    if (!approval) {
+        approvals.push({ tipo: approvalType, estado: 'pendiente' });
+    }
+    const targetApproval = approvals.find((item) => item.tipo === approvalType);
+    targetApproval.estado = nextState;
+    targetApproval.aprobador = requestUserId(req);
+    targetApproval.nombre = req.authUser?.Nombre || '';
+    targetApproval.rut = req.authUser?.Rut || '';
+    targetApproval.cargo = req.authz?.arquetipo || req.authUser?.arquetipo || req.authUser?.cargo || '';
+    targetApproval.comentario = normalizeName(req.body.comentario);
+    targetApproval.firmadoAt = new Date();
+    document.aprobaciones = approvals;
+    document.actualizadoPor = requestUserId(req);
+
+    if (nextState === 'rechazado') {
+        document.estado = 'pendiente_aprobacion';
+    } else if (document.estado === 'pendiente_aprobacion' && canPublishDocument(document)) {
+        document.estado = 'vigente';
+        document.publicadoAt = new Date();
+        document.difusion.estado = document.requiereFirmaDigital ? 'pendiente' : 'no_requerida';
+        if (document.documentoAnterior) {
+            await DocumentoEmpresa.updateOne(
+                { _id: document.documentoAnterior, estado: 'vigente' },
+                {
+                    $set: {
+                        estado: 'reemplazado',
+                        actualizadoPor: requestUserId(req),
+                    },
+                }
+            );
+        }
+    }
+
+    await document.save();
+    await document.populate(['categoria', 'documentosRelacionados.documento']);
+    req.io?.to('permission:documentos_empresa.ver').emit('documentosEmpresaActualizados', { id });
+    return res.json(serializeDocument(document, await validationMapForDocuments([document])));
+};
+
+const diffuseDocument = async (req, res) => {
+    const id = objectId(req.params.id);
+    const document = id ? await DocumentoEmpresa.findById(id).populate('categoria') : null;
+    if (!document) return res.status(404).json({ message: 'Documento no encontrado' });
+    if (document.estado !== 'vigente') {
+        return res.status(409).json({ message: 'Solo se pueden difundir documentos vigentes' });
+    }
+    if (document.requiereAprobacion && !canPublishDocument(document)) {
+        return res.status(409).json({ message: 'Faltan aprobaciones antes de difundir' });
+    }
+
+    const workers = await getTargetWorkers({
+        objetivo: req.body.objetivo === undefined ? ['all'] : req.body.objetivo,
+        cargo: req.body.cargo,
+        roles: req.body.roles,
+    });
+    if (workers.length === 0) {
+        return res.status(400).json({ message: 'No se encontraron trabajadores para difundir' });
+    }
+
+    const existingWorkers = new Set((document.firmantesDigitales || []).map((signer) => String(signer.trabajador)));
+    const targetWorkers = workers.filter((worker) => !existingWorkers.has(String(worker._id)));
+    if (targetWorkers.length === 0) {
+        return res.json({
+            message: 'Todos los trabajadores seleccionados ya tienen una solicitud de firma para este documento',
+            document: serializeDocument(document, await validationMapForDocuments([document])),
+            codigos: [],
+        });
+    }
+
+    try {
+        const copy = buildDefaultDocumentSignatureCopy(document);
+        const result = await createCompanyDocumentSignatureNotification({
+            documento: document,
+            trabajadores: targetWorkers,
+            firmanteIds: new Map(),
+            titulo: normalizeName(req.body.titulo) || copy.titulo,
+            mensaje: normalizeName(req.body.mensaje) || copy.mensaje,
+            contenido: normalizeName(req.body.contenido) || copy.contenido,
+            io: req.io,
+        });
+        const validationByWorker = new Map(result.validations.map((validation) => [
+            String(validation.trabajador),
+            validation,
+        ]));
+
+        document.requiereFirmaDigital = true;
+        document.difusion = {
+            estado: 'enviada',
+            ultimaNotificacion: result.notification._id,
+            difundidoAt: new Date(),
+            alcanceDescripcion: normalizeName(req.body.alcanceDescripcion) ||
+                document.difusion?.alcanceDescripcion ||
+                `${targetWorkers.length} trabajador(es)`,
+        };
+        targetWorkers.forEach((worker) => {
+            const validation = validationByWorker.get(String(worker._id));
+            document.firmantesDigitales.push({
+                trabajador: worker._id,
+                nombre: worker.Nombre,
+                rut: worker.Rut,
+                cargo: worker.arquetipo || worker.cargo || '',
+                notificacion: result.notification._id,
+                validacion: validation?._id,
+            });
+        });
+        document.actualizadoPor = requestUserId(req);
+        await document.save();
+        await document.populate(['categoria', 'documentosRelacionados.documento']);
+        req.io?.to('permission:documentos_empresa.ver').emit('documentosEmpresaActualizados', { id });
+        return res.status(201).json({
+            message: `Documento difundido a ${targetWorkers.length} trabajador(es)`,
+            document: serializeDocument(document, await validationMapForDocuments([document])),
+            codigos: result.signatureBatch.codes || [],
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({ message: error.message || 'No se pudo difundir el documento' });
+    }
+};
+
+const getDocumentEvidence = async (req, res) => {
+    const id = objectId(req.params.id);
+    const document = id ? await DocumentoEmpresa.findById(id).populate('categoria') : null;
+    if (!document) return res.status(404).json({ message: 'Documento no encontrado' });
+    const [notifications, validations] = await Promise.all([
+        Notificacion.find({ documentoEmpresa: document._id }).lean(),
+        NotificacionValidacion.find({ documentoEmpresa: document._id }).lean(),
+    ]);
+    const notificationIds = notifications.map((notification) => notification._id);
+    const workerIds = [
+        ...new Set([
+            ...validations.map((validation) => String(validation.trabajador)),
+            ...notifications.flatMap((notification) => (notification.trabajadores || []).map(String)),
+        ]),
+    ].filter((workerId) => mongoose.isValidObjectId(workerId));
+    const [views, workers] = await Promise.all([
+        NotificacionVista.find({
+            notificacion: { $in: notificationIds.map(String) },
+            trabajador: { $in: workerIds },
+        }).lean(),
+        Trabajador.find({ _id: { $in: workerIds } }).select('_id Rut Nombre cargo arquetipo').lean(),
+    ]);
+    const evidence = buildCompanyDocumentEvidence({
+        document,
+        notifications,
+        validations,
+        views,
+        workers,
+    });
+    const format = String(req.query.format || req.query.formato || 'json').trim().toLowerCase();
+    if (format === 'csv') {
+        const fileName = `evidencia-${document.codigoVersionado || document._id}.csv`;
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName.replace(/["\r\n]/g, '_')}"`);
+        return res.send(buildEvidenceCsv(evidence));
+    }
+    if (format === 'pdf') {
+        const pdf = await buildEvidencePdf(evidence);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${pdf.fileName.replace(/["\r\n]/g, '_')}"`);
+        return res.send(pdf.buffer);
+    }
+    return res.json(evidence);
+};
+
+const listChangeControl = async (req, res) => {
+    const documents = await DocumentoEmpresa.find({ estado: { $ne: 'archivado' } })
+        .populate('categoria')
+        .sort({ codigoBase: 1, version: -1, createdAt: -1 })
+        .lean();
+    return res.json(documents.map((document) => ({
+        id: String(document._id),
+        serieId: document.serieId,
+        codigoBase: document.codigoBase || '',
+        codigoVersionado: document.codigoVersionado || '',
+        version: document.version,
+        titulo: document.titulo,
+        categoria: document.categoria?.nombre || '',
+        estado: document.estado,
+        fechaEmision: document.fechaEmision || null,
+        fechaVencimiento: document.fechaVencimiento || null,
+        controlCambios: document.controlCambios || [],
+        matricesRelacionadas: document.matricesRelacionadas || [],
+        documentosRelacionados: (document.documentosRelacionados || []).map((relation) => ({
+            documentoId: String(relation.documento),
+            tipoRelacion: relation.tipoRelacion,
+            descripcion: relation.descripcion || '',
+        })),
+    })));
 };
 
 const getCandidates = async (req, res) => {
@@ -520,15 +1065,17 @@ const removePhysicalSigner = async (req, res) => {
 };
 
 const getSummary = async (req, res) => {
-    const documents = await DocumentoEmpresa.find({ estado: 'vigente' });
+    const documents = await DocumentoEmpresa.find({ estado: { $ne: 'archivado' } });
     const validations = await validationMapForDocuments(documents);
     const serialized = documents.map((document) => serializeDocument(document, validations));
     return res.json({
         total: serialized.length,
-        vigentes: serialized.filter(({ estadoVencimiento }) => estadoVencimiento === 'vigente').length,
+        vigentes: serialized.filter(({ estado }) => estado === 'vigente').length,
+        pendientesAprobacion: serialized.filter(({ estado }) => estado === 'pendiente_aprobacion').length,
         porVencer: serialized.filter(({ estadoVencimiento }) => estadoVencimiento === 'por_vencer').length,
         vencidos: serialized.filter(({ estadoVencimiento }) => estadoVencimiento === 'vencido').length,
         firmasPendientes: serialized.reduce((sum, document) => sum + document.firmas.total - document.firmas.completadas, 0),
+        firmasDigitalesPendientes: serialized.reduce((sum, document) => sum + document.firmasDigitales.pendientes, 0),
     });
 };
 
@@ -557,14 +1104,18 @@ const downloadDocument = async (req, res) => {
 
 module.exports = {
     addPhysicalSigner,
+    approveDocument,
     archiveCategory,
     archiveDocument,
     createCategory,
     createDocument,
+    diffuseDocument,
     downloadDocument,
     getCandidates,
     getDocument,
+    getDocumentEvidence,
     getSummary,
+    listChangeControl,
     listAvailableDocuments,
     listCategories,
     listDocuments,

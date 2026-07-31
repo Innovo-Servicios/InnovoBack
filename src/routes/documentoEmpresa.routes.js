@@ -22,6 +22,7 @@ router.delete('/categorias/:id', requirePermission('documentos_empresa.categoria
 router.get('/resumen', requirePermission('documentos_empresa.ver'), controller.getSummary);
 router.get('/firmantes/candidatos', requirePermission('documentos_empresa.firmas.gestionar'), controller.getCandidates);
 router.get('/disponibles', controller.listAvailableDocuments);
+router.get('/control-cambios', requirePermission('documentos_empresa.ver'), controller.listChangeControl);
 router.get('/archivo/:id/:fileName', controller.downloadDocument);
 
 router.get('/', requirePermission('documentos_empresa.ver'), controller.listDocuments);
@@ -30,6 +31,9 @@ router.get('/:id', requirePermission('documentos_empresa.ver'), controller.getDo
 router.put('/:id', requirePermission('documentos_empresa.gestionar'), controller.updateDocument);
 router.delete('/:id', requirePermission('documentos_empresa.gestionar'), controller.archiveDocument);
 router.post('/:id/renovar', requirePermission('documentos_empresa.gestionar'), uploadLimiter, companyDocumentUpload, controller.renewDocument);
+router.post('/:id/aprobaciones', requirePermission('documentos_empresa.gestionar'), controller.approveDocument);
+router.post('/:id/difundir', requirePermission('documentos_empresa.firmas.gestionar'), controller.diffuseDocument);
+router.get('/:id/evidencia', requirePermission('documentos_empresa.ver'), controller.getDocumentEvidence);
 router.post('/:id/firmantes', requirePermission('documentos_empresa.firmas.gestionar'), controller.addPhysicalSigner);
 router.put('/:id/firmantes/:firmanteId', requirePermission('documentos_empresa.firmas.gestionar'), controller.updatePhysicalSigner);
 router.delete('/:id/firmantes/:firmanteId', requirePermission('documentos_empresa.firmas.gestionar'), controller.removePhysicalSigner);

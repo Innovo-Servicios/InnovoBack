@@ -19,6 +19,75 @@ const COMPANY_DOCUMENT_ALLOWED_EXTENSIONS = new Set([
 
 const normalizeName = (value) => String(value || '').trim().replace(/\s+/g, ' ');
 
+const normalizeDocumentCode = (value) => normalizeName(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+
+const buildVersionedDocumentCode = (codigoBase, version) => {
+    const normalizedBase = normalizeDocumentCode(codigoBase);
+    const normalizedVersion = Number.parseInt(version, 10);
+    if (!normalizedBase || !Number.isFinite(normalizedVersion) || normalizedVersion < 1) {
+        return '';
+    }
+    return `${normalizedBase}-V${String(normalizedVersion).padStart(3, '0')}`;
+};
+
+const buildDefaultApprovals = () => [
+    { tipo: 'gerencia', estado: 'pendiente' },
+    { tipo: 'prevencion', estado: 'pendiente' },
+];
+
+const getApprovalSummary = (approvals = []) => {
+    const normalizedApprovals = Array.isArray(approvals) ? approvals : [];
+    const expected = ['gerencia', 'prevencion'];
+    if (!normalizedApprovals.length) {
+        return {
+            required: false,
+            approved: true,
+            pending: [],
+        };
+    }
+    const approvalByType = new Map(normalizedApprovals.map((approval) => [
+        approval.tipo,
+        approval,
+    ]));
+    const pending = expected.filter((type) =>
+        approvalByType.get(type)?.estado !== 'aprobado'
+    );
+    return {
+        required: normalizedApprovals.length > 0,
+        approved: pending.length === 0,
+        pending,
+    };
+};
+
+const getDigitalSignatureSummary = (signers = [], validationMap = new Map()) => {
+    const result = {
+        total: signers.length,
+        pendientes: 0,
+        firmados: 0,
+        aceptados: 0,
+        vencidos: 0,
+        bloqueados: 0,
+    };
+
+    signers.forEach((signer) => {
+        const validation = validationMap.get(String(signer.validacion || ''));
+        const state = validation?.estado || 'pendiente';
+        if (state === 'aceptado') result.aceptados += 1;
+        else if (state === 'firmado') result.firmados += 1;
+        else if (state === 'vencido') result.vencidos += 1;
+        else if (state === 'bloqueado') result.bloqueados += 1;
+        else result.pendientes += 1;
+    });
+
+    return result;
+};
+
 const slugifyCategory = (value) => normalizeName(value)
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -140,15 +209,20 @@ module.exports = {
     COMPANY_DOCUMENTS_ROOT,
     COMPANY_DOCUMENT_ALLOWED_EXTENSIONS,
     COMPANY_DOCUMENT_ALLOWED_MIME_TYPES,
+    buildDefaultApprovals,
     buildStoredFileName,
+    buildVersionedDocumentCode,
     buildWorkerVisibleCompanyDocumentQuery,
     canAccessCompanyDocument,
     daysUntilExpiration,
     deleteSavedFile,
     ensureCategoryDirectory,
+    getApprovalSummary,
+    getDigitalSignatureSummary,
     getExpirationMilestone,
     getExpirationStatus,
     isAllowedCompanyDocument,
+    normalizeDocumentCode,
     normalizeName,
     resolveInsideRoot,
     resolveCompanyDocumentPath,
