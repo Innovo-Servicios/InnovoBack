@@ -5,10 +5,15 @@ const EMPRESAS_TRABAJADOR = ['GasValpo', 'Comercial', 'Energas'];
 const trabajador_Mongoose = new mongoose.Schema({
     "Rut": { type: String, required: true ,unique:true},//
     "Nombre": { type: String, required: true },//
-    "cargo": { type: String, required: true }, "cargo": { //
+    "cargo": { // Alias transitorio del arquetipo para clientes móviles antiguos.
         type: String,
         required: true,
         enum: ['administracion', 'lector', 'supervisor', 'inspector']
+    },
+    "arquetipo": {
+        type: String,
+        enum: ['administracion', 'lector', 'supervisor', 'inspector'],
+        required: false
     },
     "empresa": [{ type: String, enum: EMPRESAS_TRABAJADOR, required: false }],
     "perfil": { type: String, required: false },//implementar documentos?
@@ -19,9 +24,9 @@ const trabajador_Mongoose = new mongoose.Schema({
     "vistas": [{ type: mongoose.Schema.Types.ObjectId, required: false }],//
     "notificacionesEliminadas": [{ type: mongoose.Schema.Types.ObjectId, required: false }],
     "documentos": [{ type: mongoose.Schema.Types.ObjectId }],//
-    "rol": { type: mongoose.Schema.Types.ObjectId, required: false },//
+    "rol": { type: mongoose.Schema.Types.ObjectId, required: false, ref: 'Rol' },//
     "rolTemporal": { //
-        "rol": { type: mongoose.Schema.Types.ObjectId, required: false },
+        "rol": { type: mongoose.Schema.Types.ObjectId, required: false, ref: 'Rol' },
         "expiracion": { type: Date, required: false }
     },
     "ID": { type: String, required: false },

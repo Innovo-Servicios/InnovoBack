@@ -302,7 +302,7 @@ const obtenerVistaAsignaciones = async (req, res) => {
         })
             .populate({
                 path: 'Trabajador',
-                select: 'Nombre Rut cargo',
+                select: 'Nombre Rut cargo arquetipo',
             })
             .populate({
                 path: 'NumeroSector',
@@ -337,7 +337,7 @@ const obtenerVistaAsignaciones = async (req, res) => {
                 id: trabajadorAsignado?._id?.toString() || null,
                 nombre: trabajadorAsignado?.Nombre || 'Sin trabajador',
                 rut: trabajadorAsignado?.Rut || '',
-                cargo: trabajadorAsignado?.cargo || '',
+                cargo: trabajadorAsignado?.arquetipo || trabajadorAsignado?.cargo || '',
             };
 
             const detalleSector = {

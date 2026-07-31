@@ -126,7 +126,7 @@ const saveVerificationPhoto = async (verificationId, file) => {
 };
 
 const verificationPopulate = [
-    { path: 'trabajador', select: 'Nombre Rut cargo' },
+    { path: 'trabajador', select: 'Nombre Rut cargo arquetipo' },
     {
         path: 'direccion',
         select: 'calle numero LAT LNG NumeroMedidor NumeroSector comuna ciudad',
@@ -187,7 +187,7 @@ const formatVerification = (verification) => {
             id: trabajador._id?.toString?.() || null,
             nombre: trabajador.Nombre || null,
             rut: trabajador.Rut || null,
-            cargo: trabajador.cargo || null,
+            cargo: trabajador.arquetipo || trabajador.cargo || null,
         } : null,
         direccion: direccion ? {
             id: direccion._id?.toString?.() || null,
@@ -215,7 +215,7 @@ const emitVerificationUpdate = (io, verification) => {
         fecha: verification.fecha,
     };
 
-    io.to('role:administracion').to('role:supervisor').emit('actualizarVerificacionTerreno', payload);
+    io.to('permission:validaciones_terreno.ver').emit('actualizarVerificacionTerreno', payload);
     if (trabajadorId) {
         io.to(`user:${trabajadorId}`).emit('nuevaVerificacionTerreno', payload);
     }
@@ -475,7 +475,7 @@ const responderVerificacion = async (req, res) => {
         }
 
         const verification = await VerificacionTerreno.findById(id)
-            .populate({ path: 'trabajador', select: 'Rut Nombre cargo' })
+            .populate({ path: 'trabajador', select: 'Rut Nombre cargo arquetipo' })
             .populate({ path: 'direccion', select: 'calle numero LAT LNG NumeroMedidor NumeroSector' });
 
         if (!verification) {

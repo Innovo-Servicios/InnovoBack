@@ -2,7 +2,7 @@ const router = require('express').Router();
 const multer = require('multer')  
 
 const {crearcliente, eliminarCliente, obtenercliente} = require('../controllers/cliente.controller.js');
-const { requireRole } = require('../middlewares/auth.middleware.js');
+const { requirePermission } = require('../middlewares/auth.middleware.js');
 const { Router } = require('express');
 
 const storage = multer.memoryStorage({limits: { fileSize: 524288000 }});
@@ -12,8 +12,8 @@ router.get('/',(req, res)=>{
     res.send('Ruta de cliente');
 });
 
-router.post('/crearcliente', requireRole('administracion', 'supervisor'), crearcliente)
-router.delete('/eliminarcliente', requireRole('administracion', 'supervisor'), eliminarCliente)
-router.get('/obtenercliente', requireRole('administracion', 'supervisor'), obtenercliente)
+router.post('/crearcliente', requirePermission('clientes.gestionar'), crearcliente)
+router.delete('/eliminarcliente', requirePermission('clientes.gestionar'), eliminarCliente)
+router.get('/obtenercliente', requirePermission('clientes.ver'), obtenercliente)
 
 module.exports = router;

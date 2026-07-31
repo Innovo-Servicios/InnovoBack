@@ -18,6 +18,8 @@ err.log
 backend.log
 scripts/*
 !scripts/purge-notification-history.js
+!scripts/migrate-access-control.js
+!scripts/migrate-company-documents.js
 storage
 public/images
 .wwebjs_cache

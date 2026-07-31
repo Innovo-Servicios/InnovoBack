@@ -94,7 +94,8 @@ const formatNovedadResponse = ({ novedad, direccion = null, trabajador = null })
             Rut: trabajador.Rut,
             _id: trabajador._id,
             nombre: trabajador.Nombre,
-            cargo: trabajador.cargo,
+            cargo: trabajador.rol?.nombre || trabajador.arquetipo || trabajador.cargo,
+            arquetipo: trabajador.arquetipo || trabajador.cargo,
             correo: trabajador.correo,
         } : null
     };
@@ -261,7 +262,8 @@ const crearNovedad = async (req, res) => {
             if (!direccion) {
                 return res.status(404).send('Dirección no encontrada.');
             }
-            const emisor = await trabajador_MongooseModel.findOne({ Rut: { $eq: getAuthRut(req) } });
+            const emisor = await trabajador_MongooseModel.findOne({ Rut: { $eq: getAuthRut(req) } })
+                .populate({ path: 'rol', select: 'nombre arquetipo' });
             if (!emisor) {
                 return res.status(404).send('Trabajador no encontrado.');
             }
@@ -394,7 +396,8 @@ const obtenerUltimasNovedadesDelDia = async (req, res) => {
             }).sort({ Fecha: -1 });
             const novedades = await Promise.all(novedadesList.map(async (novedad) => {
                 const direccion = await direccion_MongooseModel.findById(novedad.direccion);
-                const trabajador = await trabajador_MongooseModel.findById(novedad.emisor);
+                const trabajador = await trabajador_MongooseModel.findById(novedad.emisor)
+                    .populate({ path: 'rol', select: 'nombre arquetipo' });
                 return formatNovedadResponse({ novedad, direccion, trabajador });
             }));
             res.status(200).send(novedades);

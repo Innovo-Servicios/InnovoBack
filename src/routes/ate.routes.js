@@ -1,13 +1,13 @@
 const router = require('express').Router();
 const {asignacionATE,obtenerATE,repsuestaATE, obtenerATE_Adm, editarATE} = require('../middlewares/notificacion_asignacion.middleware.js');
 const {uploadMemory, upload} = require('../middlewares/multerConfig'); // Importar ambas funciones
-const { requireRole } = require('../middlewares/auth.middleware.js');
+const { requirePermission } = require('../middlewares/auth.middleware.js');
 router.get('/',(req, res)=>{
     res.send('Ruta de asignacion');
 });
-router.post('/asignacionATE', requireRole('administracion', 'supervisor'), asignacionATE); 
+router.post('/asignacionATE', requirePermission('ate.asignar'), asignacionATE);
 router.post('/obtenerATE', obtenerATE);
-router.post('/obtenerATE_Adm', requireRole('administracion', 'supervisor'), obtenerATE_Adm);
+router.post('/obtenerATE_Adm', requirePermission('ate.ver'), obtenerATE_Adm);
 router.post('/repsuestaATE',uploadMemory.single('file'),repsuestaATE);
-router.put('/editarATE', requireRole('administracion', 'supervisor'), editarATE);
+router.put('/editarATE', requirePermission('ate.editar'), editarATE);
 module.exports = router;

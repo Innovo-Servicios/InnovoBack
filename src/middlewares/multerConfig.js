@@ -73,4 +73,17 @@ const uploadMemory = multer({
     }
   },
 });
-module.exports = { upload, uploadMemory, sanitizeUploadedFileName };
+const uploadCompanyDocument = multer({
+  storage: memoryStorage,
+  limits: {
+    fileSize: 25 * 1024 * 1024,
+  },
+  fileFilter: (req, file, cb) => {
+    if (isAllowedUpload(file)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Formato de archivo empresarial no permitido.'));
+    }
+  },
+});
+module.exports = { upload, uploadMemory, uploadCompanyDocument, sanitizeUploadedFileName };

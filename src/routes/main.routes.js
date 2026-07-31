@@ -24,6 +24,9 @@ const excelRouter = require('./excel.routes.js');
 const assetsRouter = require('./assets.routes.js');
 const verificacionTerrenoRouter = require('./verificacionTerreno.routes.js');
 const botRouter = require('./bot.routes.js');
+const whatsappPanelRouter = require('./whatsappPanel.routes.js');
+const documentoEmpresaRouter = require('./documentoEmpresa.routes.js');
+const documentPreviewRouter = require('./documentPreview.routes.js');
 const { requireAuth } = require('../middlewares/auth.middleware.js');
 
 module.exports = app => {
@@ -45,6 +48,8 @@ module.exports = app => {
     app.use('/comentarioDireccion', requireAuth, direccionComentario);
     app.use('/tipoNotificacion', requireAuth, tipoNotificacion);
     app.use('/documento', requireAuth, documentoRouter);
+    app.use('/documentoEmpresa', requireAuth, documentoEmpresaRouter);
+    app.use('/document-preview', documentPreviewRouter);
     app.use('/tipoDocumento', requireAuth, tipoDocumentoRouter);
     app.use('/rol', requireAuth, rol);
     app.use('/permiso', requireAuth, permiso);
@@ -52,4 +57,5 @@ module.exports = app => {
     app.use('/assets', requireAuth, assetsRouter);
     app.use('/verificacionTerreno', requireAuth, verificacionTerrenoRouter);
     app.use('/bot', botRouter);
+    app.use('/whatsapp-web', whatsappPanelRouter);
 } 

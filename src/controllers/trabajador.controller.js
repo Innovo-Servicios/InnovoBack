@@ -32,10 +32,13 @@ const {
 const workerSchema = z.object({
     rut: z.string().trim().min(1),
     nombre: z.string().trim().min(2),
-    cargo: z.enum(['administracion', 'lector', 'supervisor', 'inspector']),
+    cargo: z.enum(['administracion', 'lector', 'supervisor', 'inspector']).optional(),
+    rolId: z.string().trim().optional(),
     empresa: z.union([z.string(), z.array(z.string())]).nullable().optional(),
     correo: z.string().trim().email(),
     clave: z.string().min(8),
+}).refine((worker) => worker.cargo || worker.rolId, {
+    message: 'Debe seleccionar un rol',
 });
 
 const loginSchema = z.object({
@@ -75,7 +78,9 @@ const normalizeEmpresas = (value) => {
 const listarTrabajadores = async (req, res) => {
     try {
         const trabajadores = await TrabajadorModel.find()
-            .select('-clave -refreshTokens -sessionVersion -tokenPush -ID -lastUbication');
+            .select('-clave -refreshTokens -sessionVersion -tokenPush -ID -lastUbication')
+            .populate({ path: 'rol', select: '_id nombre arquetipo activo' })
+            .populate({ path: 'rolTemporal.rol', select: '_id nombre arquetipo activo' });
         return res.status(200).send(trabajadores.map((worker) => sanitizeWorkerForClient(worker)));
     } catch (error) {
         console.error('Error al obtener trabajadores:', error.message);
@@ -116,7 +121,7 @@ const creartrabajador = async (req, res) => {
         return res.status(400).send('Datos de trabajador inválidos');
     }
 
-    const { rut, nombre, cargo, empresa, correo, clave } = parsedWorker.data;
+    const { rut, nombre, cargo, rolId, empresa, correo, clave } = parsedWorker.data;
     const empresasNormalizadas = normalizeEmpresas(empresa);
     if (empresa !== undefined && empresasNormalizadas === undefined) {
         return res.status(400).send('Empresa inválida');
@@ -137,7 +142,14 @@ const creartrabajador = async (req, res) => {
         if (!Correo.isEmail(correo)) {
             return res.status(405).send('El correo no es valido');
         }
-        const rol = await Rol.findOne({ nombre: { $eq: String(cargo) } });
+        const rol = rolId
+            ? await Rol.findOne({ _id: rolId, activo: true, legado: { $ne: true } })
+            : await Rol.findOne({
+                $or: [
+                    { arquetipo: cargo, esBase: true, activo: true, legado: { $ne: true } },
+                    { nombre: { $eq: String(cargo) } },
+                ],
+            });
         if (!rol) {
             return res.status(400).send('Rol no encontrado');
         }
@@ -145,14 +157,15 @@ const creartrabajador = async (req, res) => {
         const nvotrabajador = new TrabajadorModel({
             Rut: rut,
             Nombre: nombre,
-            cargo,
+            cargo: rol.arquetipo || cargo,
+            arquetipo: rol.arquetipo || cargo,
             empresa: empresas,
             correo,
             clave: passwordHash,
             rol: rol._id
         });
         await nvotrabajador.save();
-        req.io.to('role:administracion').emit('nuevo-trabajador', {
+        req.io.to('permission:trabajadores.ver').emit('nuevo-trabajador', {
             _id: nvotrabajador._id,
             Rut: nvotrabajador.Rut,
             Nombre: nvotrabajador.Nombre,
@@ -169,7 +182,7 @@ const creartrabajador = async (req, res) => {
 const modificardatostrabajador = async (req, res) => {
     const { rut} = req.body;
     if (req.authUser){ 
-        const { Nuevonombre, Nuevocargo, Nuevocorreo, Nuevaclave } = req.body;
+        const { Nuevonombre, Nuevocargo, NuevoRol, Nuevocorreo, Nuevaclave } = req.body;
         const nuevaEmpresa = normalizeEmpresas(req.body.Nuevaempresa);
         if (req.body.Nuevaempresa !== undefined && nuevaEmpresa === undefined) {
             return res.status(400).send('Empresa inválida');
@@ -182,7 +195,21 @@ const modificardatostrabajador = async (req, res) => {
             }
 
             if (Nuevonombre){ trabajador.Nombre = Nuevonombre};
-            if (Nuevocargo){ trabajador.cargo = Nuevocargo};
+            if (NuevoRol) {
+                const role = await Rol.findOne({ _id: NuevoRol, activo: true, legado: { $ne: true } });
+                if (!role) return res.status(400).send('Rol no encontrado');
+                trabajador.rol = role._id;
+                trabajador.arquetipo = role.arquetipo;
+                trabajador.cargo = role.arquetipo;
+                trabajador.rolTemporal = undefined;
+            } else if (Nuevocargo) {
+                const role = await Rol.findOne({ arquetipo: Nuevocargo, esBase: true, activo: true, legado: { $ne: true } });
+                if (!role) return res.status(400).send('Rol no encontrado');
+                trabajador.rol = role._id;
+                trabajador.arquetipo = role.arquetipo;
+                trabajador.cargo = role.arquetipo;
+                trabajador.rolTemporal = undefined;
+            }
             if (req.body.Nuevaempresa !== undefined){ trabajador.empresa = nuevaEmpresa};
             if (Nuevocorreo){ trabajador.correo = Nuevocorreo};
             if (Nuevaclave){ trabajador.clave = await hashPassword(String(Nuevaclave))};
@@ -363,7 +390,11 @@ const datosTrabajador = async (req, res) => {
         }).populate({
             path:"rol",
             model:"Rol",
-            select:"_id nombre"
+            select:"_id nombre arquetipo"
+        }).populate({
+            path:"rolTemporal.rol",
+            model:"Rol",
+            select:"_id nombre arquetipo"
         });
         if (!trabajador) {
             return res.status(404).send('Trabajador no encontrado');
@@ -415,7 +446,11 @@ const datosApp = async (req, res) => {
         }).populate({
             path:"rol",
             model:"Rol",
-            select:"_id nombre"
+            select:"_id nombre arquetipo"
+        }).populate({
+            path:"rolTemporal.rol",
+            model:"Rol",
+            select:"_id nombre arquetipo"
         });
         if (!trabajador) {
             return res.status(404).send('Trabajador no encontrado');
@@ -426,6 +461,30 @@ const datosApp = async (req, res) => {
         res.status(500).send('Error interno del servidor');
     }
 }
+
+const obtenerSesion = async (req, res) => {
+    try {
+        const user = req.authUser;
+        return res.json({
+            usuario: {
+                id: String(user._id),
+                rut: user.Rut,
+                nombre: user.Nombre,
+                correo: user.correo,
+            },
+            rol: req.authz?.rol || null,
+            rolPermanente: req.authz?.rolPermanente || null,
+            rolTemporal: req.authz?.rolTemporal || null,
+            arquetipo: req.authz?.arquetipo || user.arquetipo || user.cargo,
+            cargo: req.authz?.arquetipo || user.arquetipo || user.cargo,
+            permisos: req.authz?.permisos || [],
+        });
+    } catch (error) {
+        console.error('Error al obtener sesión:', error.message);
+        return res.status(500).json({ message: 'Error interno del servidor' });
+    }
+};
+
 const fotoTrabajador = async (req, res) => {
     try {
         const trabajador = await TrabajadorModel.findOne({ Rut: { $eq: getAuthRut(req) } });
@@ -516,4 +575,4 @@ const obtenerRegionChile = async (req,res) => {
   
 
 
-module.exports = {obtenerRegionChile,creartrabajador, modificardatostrabajador, eliminartrabajador, login, listarTrabajadores,obtenerTrabajador, updatePushToken,listarTrabajadoresConectados,seguimientoUbicaciones,datosTrabajador, datosApp,fotoTrabajador};
+module.exports = {obtenerRegionChile,creartrabajador, modificardatostrabajador, eliminartrabajador, login, listarTrabajadores,obtenerTrabajador, updatePushToken,listarTrabajadoresConectados,seguimientoUbicaciones,datosTrabajador, datosApp,obtenerSesion,fotoTrabajador};

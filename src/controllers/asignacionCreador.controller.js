@@ -31,10 +31,16 @@ dayjs.extend(utc);
 const EMPRESAS = ['GasValpo', 'Comercial', 'Energas'];
 const EXTRA_ROUTE_DAY_TYPES = ['adelantoVerificacion', 'verificacion'];
 const ROUTE_DAY_DATE_FIELDS = Array.from(new Set([...ASSIGNMENT_TYPES, ...EXTRA_ROUTE_DAY_TYPES]));
-const ASSIGNABLE_WORKER_FILTER = { cargo: { $eq: 'lector' } };
-const CATALOG_WORKER_FILTER = { cargo: { $in: ['administracion', 'lector', 'supervisor', 'inspector'] } };
-const ASSIGNABLE_INSPECTOR_FILTER = { cargo: { $eq: 'inspector' } };
-const ASSIGNABLE_ASSIGNMENT_FILTER = { cargo: { $in: ['lector', 'inspector'] } };
+const buildArchetypeFilter = (values) => ({
+    $or: [
+        { arquetipo: { $in: values } },
+        { arquetipo: { $exists: false }, cargo: { $in: values } },
+    ],
+});
+const ASSIGNABLE_WORKER_FILTER = buildArchetypeFilter(['lector']);
+const CATALOG_WORKER_FILTER = buildArchetypeFilter(['administracion', 'lector', 'supervisor', 'inspector']);
+const ASSIGNABLE_INSPECTOR_FILTER = buildArchetypeFilter(['inspector']);
+const ASSIGNABLE_ASSIGNMENT_FILTER = buildArchetypeFilter(['lector', 'inspector']);
 const READER_ASSIGNMENT_TYPES = ['lectura', 'reparto'];
 const INSPECTOR_ASSIGNMENT_TYPES = ['adelantoVerificacion', 'verificacion'];
 
@@ -250,7 +256,8 @@ const serializeWorker = (worker) => ({
     id: worker?._id ? String(worker._id) : null,
     nombre: worker?.Nombre || 'Sin trabajador',
     rut: worker?.Rut || '',
-    cargo: worker?.cargo || '',
+    cargo: worker?.arquetipo || worker?.cargo || '',
+    arquetipo: worker?.arquetipo || worker?.cargo || '',
     empresa: serializeCompanyList(worker?.empresa),
     empresas: serializeCompanyList(worker?.empresa),
 });
@@ -295,7 +302,7 @@ const loadCatalogData = async (empresa) => {
             .sort({ NumeroSector: 1 })
             .lean(),
         Trabajador.find(buildCompanyWorkerFilter(empresa, CATALOG_WORKER_FILTER))
-            .select('_id Nombre Rut cargo correo empresa')
+            .select('_id Nombre Rut cargo arquetipo correo empresa')
             .sort({ Nombre: 1 })
             .lean(),
         Sector.distinct('empresa'),
@@ -347,8 +354,8 @@ const normalizeTemplatePayload = async (empresa, payload) => {
     const [sectores, rutas, trabajadores, inspectores] = await Promise.all([
         Sector.find({ empresa: { $eq: empresa } }).select('_id NumeroRuta').lean(),
         Ruta.find().select('_id NumeroRuta').lean(),
-        Trabajador.find(buildCompanyWorkerFilter(empresa, ASSIGNABLE_WORKER_FILTER)).select('_id Nombre Rut cargo empresa').lean(),
-        Trabajador.find(buildCompanyWorkerFilter(empresa, ASSIGNABLE_INSPECTOR_FILTER)).select('_id Nombre Rut cargo empresa').lean(),
+        Trabajador.find(buildCompanyWorkerFilter(empresa, ASSIGNABLE_WORKER_FILTER)).select('_id Nombre Rut cargo arquetipo empresa').lean(),
+        Trabajador.find(buildCompanyWorkerFilter(empresa, ASSIGNABLE_INSPECTOR_FILTER)).select('_id Nombre Rut cargo arquetipo empresa').lean(),
     ]);
 
     const sectorIds = new Set(sectores.map((sector) => String(sector._id)));
@@ -594,7 +601,7 @@ const buildExistingAssignmentsMap = async (sectorIds, year, month) => {
         },
         tipo: { $in: ASSIGNMENT_TYPES },
     })
-        .populate({ path: 'Trabajador', select: 'Nombre Rut cargo empresa' })
+        .populate({ path: 'Trabajador', select: 'Nombre Rut cargo arquetipo empresa' })
         .lean();
 
     const map = new Map();
@@ -964,8 +971,8 @@ const loadSavedExceptions = async (empresa, month) => {
 
     return AssignmentException.find({ empresa: { $eq: empresa }, month: { $eq: month } })
         .populate({ path: 'sector', select: 'sector NumeroSector NumeroRuta empresa' })
-        .populate({ path: 'originalWorker', select: 'Nombre Rut cargo empresa' })
-        .populate({ path: 'replacementWorker', select: 'Nombre Rut cargo empresa' })
+        .populate({ path: 'originalWorker', select: 'Nombre Rut cargo arquetipo empresa' })
+        .populate({ path: 'replacementWorker', select: 'Nombre Rut cargo arquetipo empresa' })
         .sort({ createdAt: 1 })
         .lean();
 };
@@ -1529,7 +1536,7 @@ const findExistingAssignment = async (sectorId, fecha, tipo) => {
             $gte: start,
             $lte: end,
         },
-    }).populate({ path: 'Trabajador', select: 'Nombre Rut cargo empresa' });
+    }).populate({ path: 'Trabajador', select: 'Nombre Rut cargo arquetipo empresa' });
 };
 
 const findExistingWorkerAssignmentsOnDate = async (trabajadorId, fecha) => {
@@ -1564,7 +1571,7 @@ const confirmarCreadorAsignaciones = async (req, res) => {
 
     const [sectores, trabajadores] = await Promise.all([
         Sector.find({ empresa: { $eq: parsed.data.empresa } }).select('_id').lean(),
-        Trabajador.find(buildCompanyWorkerFilter(parsed.data.empresa, ASSIGNABLE_ASSIGNMENT_FILTER)).select('_id cargo').lean(),
+        Trabajador.find(buildCompanyWorkerFilter(parsed.data.empresa, ASSIGNABLE_ASSIGNMENT_FILTER)).select('_id cargo arquetipo').lean(),
     ]);
     const sectorIds = new Set(sectores.map((sector) => String(sector._id)));
     const workerById = new Map(trabajadores.map((worker) => [String(worker._id), worker]));
@@ -1590,7 +1597,7 @@ const confirmarCreadorAsignaciones = async (req, res) => {
         }
         const selectedWorker = trabajadorId ? workerById.get(trabajadorId) : null;
         const expectedCargo = expectedCargoForAssignmentType(assignment.tipo);
-        if (!selectedWorker || selectedWorker.cargo !== expectedCargo) {
+        if (!selectedWorker || (selectedWorker.arquetipo || selectedWorker.cargo) !== expectedCargo) {
             errors.push(`Asignación ${index + 1}: trabajador inválido para ${assignment.tipo}.`);
             continue;
         }

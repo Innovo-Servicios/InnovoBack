@@ -87,10 +87,17 @@ WHATSAPP_ATE_ENABLED=true
 WHATSAPP_ATE_RECIPIENT=56977090807
 WHATSAPP_AUTH_PATH=storage/whatsapp-auth
 WHATSAPP_HEADLESS=true
+WHATSAPP_WEB_PANEL_TOKEN=token-seguro-para-el-panel
 ```
 
 Al iniciar el backend por primera vez, escanea el QR que aparece en consola. Una
 vez autenticado, el log debe mostrar `WhatsApp listo`.
+
+El backend tambien expone un panel grafico en `/whatsapp-web` para ver el estado
+de la sesion local, mostrar el QR cuando exista uno pendiente, reiniciar el
+cliente y enviar un mensaje de prueba. Las APIs del panel requieren
+`Authorization: Bearer <WHATSAPP_WEB_PANEL_TOKEN>`. Si esa variable no esta
+definida, se usa `BOT_WHATSAPP_WEBHOOK_TOKEN` como compatibilidad.
 
 ## WhatsApp con resultado del bot Gmail
 

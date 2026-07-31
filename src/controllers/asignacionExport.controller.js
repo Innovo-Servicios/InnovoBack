@@ -69,7 +69,7 @@ const loadAssignmentsForProgramacionExport = async ({ empresa, month }) => {
     })
         .populate({
             path: 'Trabajador',
-            select: 'Nombre Rut cargo ID empresa',
+            select: 'Nombre Rut cargo arquetipo ID empresa',
         })
         .populate({
             path: 'NumeroSector',

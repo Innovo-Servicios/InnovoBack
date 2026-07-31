@@ -13,6 +13,16 @@ const {
 } = require('../utils/security.js');
 
 const trabajadoresBasePath = path.resolve(__dirname, '../../../TRABAJADORES');
+const IMAGE_DOCUMENT_MIME_TYPES = new Set(['image/jpeg', 'image/png']);
+const WORKER_DOCUMENT_MIME_TYPES = new Set([
+    'image/jpeg',
+    'image/png',
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+]);
 
 const normalizeRequiredString = (value) => {
     if (typeof value !== 'string') {
@@ -51,6 +61,21 @@ const normalizeObjectId = (value) => {
     }
 
     return normalizedValue;
+};
+
+const isAllowedWorkerDocument = (file) =>
+    Boolean(file?.mimetype && WORKER_DOCUMENT_MIME_TYPES.has(file.mimetype));
+
+const isImageWorkerDocument = (file) => IMAGE_DOCUMENT_MIME_TYPES.has(file?.mimetype);
+
+const buildSafeDocumentFileName = ({ documentId, file, timestamp = Date.now() }) => {
+    const originalName = path.basename(String(file?.originalname || 'documento'));
+    const rawName = `file-${timestamp}-${documentId}-${originalName}`;
+    const safeFileName = path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_');
+
+    return isImageWorkerDocument(file)
+        ? safeFileName.replace(/\.[^/.]+$/, '.jpeg')
+        : safeFileName;
 };
 
 const resolveSafeWorkerPath = (workerId) => {
@@ -95,6 +120,121 @@ const resolveSafeDocumentPath = (documentPath) => {
 
 const sanitizeDocument = sanitizeDocumentForClient;
 
+const writeWorkerDocumentFile = async ({
+    file,
+    finalPath,
+    sharpFactory = sharp,
+    fsModule = fs,
+}) => {
+    if (isImageWorkerDocument(file)) {
+        await sharpFactory(file.buffer)
+            .resize(1024, 1024, { fit: 'inside' })
+            .toFormat('jpeg', { quality: 80 })
+            .toFile(finalPath);
+        return;
+    }
+
+    await fsModule.promises.writeFile(finalPath, file.buffer);
+};
+
+const createDocumentForWorker = async ({
+    worker,
+    tipoId,
+    file,
+    objectIdFactory = () => new mongoose.Types.ObjectId(),
+    documentFactory = (payload) => new documentos_MongooseModel(payload),
+    writeFile = writeWorkerDocumentFile,
+    fsModule = fs,
+    now = () => moment().tz('America/Santiago'),
+}) => {
+    const documentId = objectIdFactory();
+    const uploadPath = resolveSafeWorkerPath(worker?._id);
+    if (!uploadPath) {
+        throw new Error('Trabajador inválido');
+    }
+
+    if (!fsModule.existsSync(uploadPath)) {
+        fsModule.mkdirSync(uploadPath, { recursive: true });
+    }
+
+    const fileName = buildSafeDocumentFileName({
+        documentId,
+        file,
+    });
+    const finalPath = path.join(uploadPath, fileName);
+
+    if (!finalPath.startsWith(uploadPath + path.sep)) {
+        throw new Error('Ruta de archivo calculada inválida.');
+    }
+
+    let documentCreated = null;
+    try {
+        await writeFile({ file, finalPath });
+
+        documentCreated = documentFactory({
+            _id: documentId,
+            tipo: tipoId,
+            nombreOriginal: path.basename(String(file.originalname || 'documento')),
+            url: finalPath,
+            formato: file.mimetype,
+            fecha: now(),
+        });
+
+        await documentCreated.save();
+
+        if (!Array.isArray(worker.documentos)) {
+            worker.documentos = [];
+        }
+        worker.documentos.push(new mongoose.Types.ObjectId(documentId));
+        await worker.save();
+
+        return documentCreated;
+    } catch (error) {
+        if (documentCreated?.deleteOne) {
+            try {
+                await documentCreated.deleteOne();
+            } catch {
+                // Best-effort cleanup only.
+            }
+        }
+        if (fsModule.existsSync(finalPath)) {
+            fsModule.unlinkSync(finalPath);
+        }
+        throw error;
+    }
+};
+
+const createMassWorkerDocuments = async ({
+    workers,
+    tipoId,
+    file,
+    createOne = createDocumentForWorker,
+}) => {
+    const result = {
+        totalTrabajadores: workers.length,
+        documentosCreados: 0,
+        fallidos: [],
+    };
+
+    for (const worker of workers) {
+        try {
+            await createOne({ worker, tipoId, file });
+            result.documentosCreados += 1;
+        } catch (error) {
+            result.fallidos.push({
+                trabajadorId: worker?._id ? String(worker._id) : '',
+                rut: worker?.Rut ? String(worker.Rut) : '',
+                nombre: worker?.Nombre ? String(worker.Nombre) : '',
+                motivo: error instanceof Error ? error.message : 'No se pudo asignar el documento',
+            });
+        }
+    }
+
+    return result;
+};
+
+const getMassWorkerDocumentsStatus = (result) => result.fallidos.length > 0 ? 207 : 201;
+
 const crearDocumento = async (req, res) => {
     const { tipo, objetivo } = req.body;
 
@@ -117,14 +257,7 @@ const crearDocumento = async (req, res) => {
         }
 
         const archivo = req.file;
-        const formatosPermitidos = [
-            'image/jpeg',
-            'image/png',
-            'application/pdf',
-            'application/msword',
-        ];
-
-        if (!formatosPermitidos.includes(archivo.mimetype)) {
+        if (!isAllowedWorkerDocument(archivo)) {
             return res.status(400).send('Formato de archivo no permitido: ' + archivo.mimetype);
         }
 
@@ -135,63 +268,53 @@ const crearDocumento = async (req, res) => {
             return res.status(404).send('Trabajador no encontrado');
         }
 
-        const uploadPath = resolveSafeWorkerPath(trabajador._id);
-        if (!uploadPath) {
-            return res.status(404).send('Trabajador no encontrado');
-        }
-        // Ruta donde se guardarán los archivos procesados
-        if (!fs.existsSync(uploadPath)) {
-            fs.mkdirSync(uploadPath, { recursive: true });
-        }
-
-        let finalPath;
-        // Sanitize the filename stripping any directory components from user-supplied name
-        const rawName = `file-${Date.now()}-${archivo.originalname}`;
-        const safeFileName = path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_');
-
-        if (archivo.mimetype === 'image/jpeg' || archivo.mimetype === 'image/png') {
-            // Procesar imágenes en memoria con sharp
-            // Build path exclusively from the trusted uploadPath + safe static filename
-            const imageFileName = safeFileName.replace(/\.[^/.]+$/, '.jpeg');
-            finalPath = path.join(uploadPath, imageFileName);
-        } else {
-            // Guardar otros tipos de archivos directamente desde el buffer
-            finalPath = path.join(uploadPath, safeFileName);
-        }
-
-        // Estricta verificación de no-traversal para el analizador de código
-        if (!finalPath.startsWith(uploadPath + path.sep)) {
-            throw new Error("Ruta de archivo calculada inválida.");
-        }
-
-        if (archivo.mimetype === 'image/jpeg' || archivo.mimetype === 'image/png') {
-            await sharp(archivo.buffer)
-                .resize(1024, 1024, { fit: 'inside' }) // Redimensiona manteniendo proporción
-                .toFormat('jpeg', { quality: 80 }) // Convierte a JPEG con calidad 80%
-                .toFile(finalPath);
-        } else {
-            fs.writeFileSync(finalPath, archivo.buffer);
-        }
-
-        // Crear el documento en la base de datos
-        const nuevoDocumento = new documentos_MongooseModel({
-            _id: new mongoose.Types.ObjectId(),
-            tipo: resTipo._id,
-            url: finalPath, // Ruta del archivo guardado (procesado si es imagen)
-            formato: archivo.mimetype,
-            fecha: moment().tz('America/Santiago'),
+        await createDocumentForWorker({
+            worker: trabajador,
+            tipoId: resTipo._id,
+            file: archivo,
         });
-
-        await nuevoDocumento.save();
-
-        // Asociar el documento al trabajador
-        trabajador.documentos.push(new mongoose.Types.ObjectId(nuevoDocumento._id));
-        await trabajador.save();
 
         return res.status(201).send('Documento creado correctamente');
     } catch (error) {
         console.error('Error al crear el documento:', error.message);
         return res.status(500).send('Error interno del servidor');
+    }
+};
+
+const crearDocumentoMasivo = async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ message: 'No se ha subido ningún archivo' });
+    }
+
+    try {
+        const tipoId = normalizeObjectId(req.body?.tipo);
+        if (!tipoId) {
+            return res.status(400).json({ message: 'Tipo de documento inválido' });
+        }
+
+        if (!isAllowedWorkerDocument(req.file)) {
+            return res.status(400).json({ message: `Formato de archivo no permitido: ${req.file.mimetype}` });
+        }
+
+        const resTipo = await tipoDocumento_MongooseModel.findOne({
+            _id: { $eq: new mongoose.Types.ObjectId(tipoId) }
+        });
+        if (!resTipo) {
+            return res.status(400).json({ message: 'Tipo de documento no encontrado' });
+        }
+
+        const trabajadores = await trabajador_MongooseModel.find()
+            .select('_id Rut Nombre documentos');
+        const result = await createMassWorkerDocuments({
+            workers: trabajadores,
+            tipoId: resTipo._id,
+            file: req.file,
+        });
+
+        return res.status(getMassWorkerDocumentsStatus(result)).json(result);
+    } catch (error) {
+        console.error('Error al crear documentos masivos:', error.message);
+        return res.status(500).json({ message: 'Error interno del servidor' });
     }
 };
 
@@ -332,7 +455,7 @@ const descargarDocumento = async (req, res) => {
             return res.status(404).send('Documento no encontrado');
         }
 
-        const requesterRole = String(req.authUser?.cargo || '').trim().toLowerCase();
+        const requesterRole = String(req.authz?.arquetipo || req.authUser?.arquetipo || req.authUser?.cargo || '').trim().toLowerCase();
         const requesterRut = String(req.authUser?.Rut || req.auth?.rut || '').trim();
         const canAccessForeignDocument = ['administracion', 'supervisor'].includes(requesterRole);
 
@@ -345,7 +468,7 @@ const descargarDocumento = async (req, res) => {
             return res.status(404).send('Documento no encontrado');
         }
 
-        return res.download(documentPath, path.basename(documentPath));
+        return res.download(documentPath, path.basename(String(documento.nombreOriginal || documentPath)));
     } catch (error) {
         return res.status(500).send('Error interno del servidor');
     }
@@ -394,4 +517,19 @@ const deleteDocumento= async(req,res)=>{
     }
 }
 
-module.exports = { crearDocumento, obtenerDocumentos, eliminarDocumentos,listarDocumentos,deleteDocumento, descargarDocumento };
+module.exports = {
+    crearDocumento,
+    crearDocumentoMasivo,
+    obtenerDocumentos,
+    eliminarDocumentos,
+    listarDocumentos,
+    deleteDocumento,
+    descargarDocumento,
+    __testables: {
+        buildSafeDocumentFileName,
+        createDocumentForWorker,
+        createMassWorkerDocuments,
+        getMassWorkerDocumentsStatus,
+        isAllowedWorkerDocument,
+    },
+};

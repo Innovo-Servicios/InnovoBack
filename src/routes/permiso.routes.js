@@ -1,10 +1,13 @@
 const router= require('express').Router();
-const { requireAuth, requireRole } = require('../middlewares/auth.middleware.js');
+const { requireAuth, requirePermission } = require('../middlewares/auth.middleware.js');
 
-const {obtenerPermisos, crearPermiso, eliminarPermiso} = require('../controllers/permiso.controller.js');
+const {actualizarPermiso, obtenerCatalogo, obtenerPermisos, crearPermiso, eliminarPermiso} = require('../controllers/permiso.controller.js');
 
-router.post('/obtenerPermisos', requireAuth, requireRole('administracion'), obtenerPermisos);
-router.post('/crearPermiso', requireAuth, requireRole('administracion'), crearPermiso);
-router.post('/eliminarPermiso', requireAuth, requireRole('administracion'), eliminarPermiso);
+router.get('/catalogo', requirePermission('accesos.ver'), obtenerCatalogo);
+router.patch('/:clave', requirePermission('accesos.gestionar'), actualizarPermiso);
+
+router.post('/obtenerPermisos', requireAuth, requirePermission('accesos.ver'), obtenerPermisos);
+router.post('/crearPermiso', requireAuth, requirePermission('accesos.gestionar'), crearPermiso);
+router.post('/eliminarPermiso', requireAuth, requirePermission('accesos.gestionar'), eliminarPermiso);
 
 module.exports = router;

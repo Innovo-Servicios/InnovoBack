@@ -13,6 +13,8 @@ const {
     tipoDocumento_MongooseModel,
 } = require('../models/tipoDocumento.model.js');
 const { documentos_MongooseModel } = require('../models/documentos.model.js');
+const { DocumentoEmpresa } = require('../models/documentoEmpresa.model.js');
+const { resolveCompanyDocumentPath } = require('../services/companyDocuments.service.js');
 const {
     notificacion_validacion_MongooseModel,
 } = require('../models/notificacion_validacion.model.js');
@@ -672,7 +674,7 @@ const normalizeNotificationTargets = (objetivo) => {
     }
 };
 
-const getTargetWorkers = async (objetivoArray, cargoArray = []) => {
+const getTargetWorkers = async (objetivoArray, cargoArray = [], roleIds = []) => {
     if (objetivoArray[0] === 'all') {
         return trabajador_MongooseModel.find();
     }
@@ -683,9 +685,17 @@ const getTargetWorkers = async (objetivoArray, cargoArray = []) => {
         });
     }
 
+    if (roleIds.length > 0) {
+        const validRoleIds = roleIds.filter((id) => mongoose.isValidObjectId(id));
+        return trabajador_MongooseModel.find({ rol: { $in: validRoleIds } });
+    }
+
     if (cargoArray.length > 0) {
         return trabajador_MongooseModel.find({
-            cargo: { $in: cargoArray },
+            $or: [
+                { arquetipo: { $in: cargoArray } },
+                { arquetipo: { $exists: false }, cargo: { $in: cargoArray } },
+            ],
         });
     }
 
@@ -696,12 +706,44 @@ const createSignatureValidations = async ({
     nuevaNotificacion,
     trabajadores,
     expiresAtBase,
+    documentoEmpresa,
+    firmanteIds = new Map(),
 }) => {
     if (!nuevaNotificacion.requiereFirma) {
         return null;
     }
 
     const expiresAt = buildCodeExpiresAt(expiresAtBase);
+
+    if (nuevaNotificacion.firmaAutomatica) {
+        const signedAt = new Date();
+        const validations = await notificacion_validacion_MongooseModel.insertMany(
+            trabajadores.map((trabajador) => ({
+                notificacion: nuevaNotificacion._id,
+                trabajador: trabajador._id,
+                documentoEmpresa: documentoEmpresa?._id || documentoEmpresa,
+                firmanteDocumento: firmanteIds.get(String(trabajador._id)),
+                expiresAt,
+                estado: 'aceptado',
+                firmaAutomatica: true,
+                intentos: 0,
+                maxIntentos: Number.isFinite(NOTIFICATION_CODE_MAX_ATTEMPTS)
+                    ? NOTIFICATION_CODE_MAX_ATTEMPTS
+                    : 5,
+                firmadoAt: signedAt,
+                aceptadoAt: signedAt,
+            }))
+        );
+
+        return {
+            notificationId: nuevaNotificacion._id.toString(),
+            expiresAt: null,
+            validations,
+            codes: [],
+            firmaAutomatica: true,
+        };
+    }
+
     const usedCodes = new Set();
     const codes = trabajadores.map((trabajador) => {
         const code = generateSixDigitCode(usedCodes);
@@ -717,10 +759,12 @@ const createSignatureValidations = async ({
         };
     });
 
-    await notificacion_validacion_MongooseModel.insertMany(
+    const validations = await notificacion_validacion_MongooseModel.insertMany(
         codes.map(({ trabajador, codeHash, encryptedCode }) => ({
             notificacion: nuevaNotificacion._id,
             trabajador: trabajador._id,
+            documentoEmpresa: documentoEmpresa?._id || documentoEmpresa,
+            firmanteDocumento: firmanteIds.get(String(trabajador._id)),
             codeHash,
             ...encryptedCode,
             expiresAt,
@@ -735,6 +779,7 @@ const createSignatureValidations = async ({
     return {
         notificationId: nuevaNotificacion._id.toString(),
         expiresAt,
+        validations,
         codes: codes.map(({ trabajador, code }) => ({
             trabajadorId: trabajador._id.toString(),
             rut: trabajador.Rut,
@@ -749,10 +794,22 @@ const buildCreatedNotificationResponse = (nuevaNotificacion, signatureBatch) => 
         return null;
     }
 
+    if (signatureBatch.firmaAutomatica) {
+        return {
+            message: `Notificación firmada automáticamente por ${signatureBatch.validations.length} trabajadores sin enviarla a sus dispositivos`,
+            notificationId: nuevaNotificacion._id.toString(),
+            requiereFirma: true,
+            firmaAutomatica: true,
+            firmasAutomaticas: signatureBatch.validations.length,
+            codigos: [],
+        };
+    }
+
     return {
         message: getCreatedNotificationMessage(nuevaNotificacion),
         notificationId: nuevaNotificacion._id.toString(),
         requiereFirma: true,
+        firmaAutomatica: false,
         expiresAt: signatureBatch.expiresAt,
         codigos: signatureBatch.codes,
     };
@@ -787,9 +844,11 @@ const createNotificationRecord = ({
     url,
     fecha,
     requiereFirma,
+    firmaAutomatica = false,
     isScheduled,
     scheduledDate,
     documentoId,
+    documentoEmpresaId,
     metadata,
 }) => new notificaciones_MongooseModel({
     trabajadores: trabajadores.map((trabajador) => trabajador._id),
@@ -800,11 +859,13 @@ const createNotificationRecord = ({
     url,
     fecha,
     documento: documentoId,
+    documentoEmpresa: documentoEmpresaId,
     requiereFirma,
+    firmaAutomatica,
     metadata,
     programada: Boolean(isScheduled),
     fechaProgramacion: scheduledDate || undefined,
-    fechaEnvio: isScheduled ? undefined : fecha,
+    fechaEnvio: isScheduled || firmaAutomatica ? undefined : fecha,
     estado: isScheduled ? NOTIFICATION_STATE.SCHEDULED : NOTIFICATION_STATE.SENT,
 });
 
@@ -888,6 +949,87 @@ const createSystemNotificationForWorkers = async ({
     await emitNotificationToWorkers(io, targetWorkers, nuevaNotificacion);
 
     return nuevaNotificacion;
+};
+
+const createCompanyDocumentSignatureNotification = async ({
+    documento,
+    trabajadores,
+    firmanteIds,
+    titulo,
+    mensaje,
+    contenido,
+    io,
+}) => {
+    const notificationType = await TipoNotificacion.findOne({ value: { $eq: 'document' } });
+    if (!notificationType) {
+        const error = new Error('Tipo de notificación documental no encontrado');
+        error.status = 400;
+        throw error;
+    }
+    const fecha = moment().tz(NOTIFICATION_TIMEZONE).toDate();
+    const metadata = {
+        tipo: 'documento_empresa_firma',
+        documentoEmpresaId: String(documento._id),
+        serieId: documento.serieId,
+        version: documento.version,
+        categoria: documento.categoria?.nombre || '',
+        documentoTitulo: documento.titulo,
+    };
+    const notification = createNotificationRecord({
+        trabajadores,
+        tipoId: notificationType._id,
+        titulo,
+        mensaje,
+        contenido,
+        url: documento.archivo.rutaRelativa,
+        fecha,
+        requiereFirma: true,
+        isScheduled: false,
+        documentoEmpresaId: documento._id,
+        metadata,
+    });
+    try {
+        await notification.save();
+        const signatureBatch = await createSignatureValidations({
+            nuevaNotificacion: notification,
+            trabajadores,
+            expiresAtBase: fecha,
+            documentoEmpresa: documento,
+            firmanteIds,
+        });
+        const pushData = buildPushNotificationData({
+            contenido,
+            notificationId: notification._id,
+            tipo: notificationType.value,
+            fecha,
+            url: documento.archivo.rutaRelativa,
+            archivoMimeType: documento.archivo.mimeType,
+            metadata,
+        });
+        await assignNotificationToWorkers({
+            trabajadores,
+            nuevaNotificacion: notification,
+            titulo,
+            mensaje,
+            data: pushData,
+        });
+        await emitNotificationToWorkers(io, trabajadores, notification);
+        return { notification, signatureBatch, validations: signatureBatch.validations };
+    } catch (error) {
+        if (notification?._id) {
+            await Promise.all([
+                notificacion_validacion_MongooseModel.deleteMany({ notificacion: notification._id }),
+                notificaciones_MongooseModel.deleteOne({ _id: notification._id }),
+                ...trabajadores.map(async (trabajador) => {
+                    trabajador.notificaciones = (trabajador.notificaciones || []).filter(
+                        (id) => String(id) !== String(notification._id)
+                    );
+                    await trabajador.save().catch(() => undefined);
+                }),
+            ]);
+        }
+        throw error;
+    }
 };
 
 const emitNotificationToWorker = async (io, trabajador, nuevaNotificacion) => {
@@ -1156,8 +1298,9 @@ const obtenerNotificacionesDelUserPaginadas = async (req, res) => {
 };
   
 const crearNotificacion = async (req, res) => {
-    const { objetivo, tipo, titulo, mensaje, contenido, url, cargo } = req.body;
-    const requiereFirma = parseBoolean(req.body.requiereFirma);
+    const { objetivo, tipo, titulo, mensaje, contenido, url, cargo, roles } = req.body;
+    const firmaAutomatica = parseBoolean(req.body.firmaAutomatica);
+    const requiereFirma = firmaAutomatica || parseBoolean(req.body.requiereFirma);
     const token = req.accessToken || req.body.token;
     const tokenValido = await Token.validartoken(token);
     if (!tokenValido.valid) {
@@ -1168,9 +1311,12 @@ const crearNotificacion = async (req, res) => {
         return res.status(400).send('Falta la URL del documento');
     }
 
-    const objetivoArray = normalizeNotificationTargets(objetivo);
-    const cargoArray = normalizeNotificationTargets(cargo);
-    if (objetivoArray.length === 0 && cargoArray.length === 0) {
+    const objetivoArray = firmaAutomatica
+        ? ['all']
+        : normalizeNotificationTargets(objetivo);
+    const cargoArray = firmaAutomatica ? [] : normalizeNotificationTargets(cargo);
+    const roleIds = firmaAutomatica ? [] : normalizeNotificationTargets(roles);
+    if (objetivoArray.length === 0 && cargoArray.length === 0 && roleIds.length === 0) {
         return res.status(400).send('Falta el objetivo de la notificación');
     }
 
@@ -1181,12 +1327,18 @@ const crearNotificacion = async (req, res) => {
         return res.status(error.statusCode || 400).send(error.message);
     }
 
+    if (firmaAutomatica && scheduleConfig.isScheduled) {
+        return res
+            .status(400)
+            .send('La firma automática se registra al crear la notificación y no puede programarse');
+    }
+
     try {
         const restipo = await TipoNotificacion.findOne({ value: { $eq: String(tipo) } });
         if (!restipo) {
             return res.status(400).send('Tipo de notificación no encontrado');
         }
-        const trabajadores = await getTargetWorkers(objetivoArray, cargoArray);
+        const trabajadores = await getTargetWorkers(objetivoArray, cargoArray, roleIds);
         if (trabajadores.length === 0) {
             return res.status(400).send('No se encontraron destinatarios para la notificación');
         }
@@ -1202,6 +1354,7 @@ const crearNotificacion = async (req, res) => {
             url,
             fecha: fechaNotificacion,
             requiereFirma,
+            firmaAutomatica,
             isScheduled: scheduleConfig.isScheduled,
             scheduledDate: scheduleConfig.scheduledDate,
         });
@@ -1220,7 +1373,7 @@ const crearNotificacion = async (req, res) => {
             expiresAtBase: fechaNotificacion,
         });
 
-        if (!scheduleConfig.isScheduled) {
+        if (!scheduleConfig.isScheduled && !firmaAutomatica) {
             await assignNotificationToWorkers({
                 trabajadores,
                 nuevaNotificacion,
@@ -1246,8 +1399,9 @@ const crearNotificacion = async (req, res) => {
     }
 };
 const crearNotificacionDocumento = async (req, res) => {
-    const { objetivo, tipo, titulo, mensaje, contenido, cargo } = req.body;
-    const requiereFirma = parseBoolean(req.body.requiereFirma);
+    const { objetivo, tipo, titulo, mensaje, contenido, cargo, roles } = req.body;
+    const firmaAutomatica = parseBoolean(req.body.firmaAutomatica);
+    const requiereFirma = firmaAutomatica || parseBoolean(req.body.requiereFirma);
     const token = req.accessToken || req.body.token;
     const tokenValido = await Token.validartoken(token);
     if (!tokenValido.valid) {
@@ -1258,9 +1412,12 @@ const crearNotificacionDocumento = async (req, res) => {
         return res.status(400).send('Falta el archivo');
     }
 
-    const objetivoArray = normalizeNotificationTargets(objetivo);
-    const cargoArray = normalizeNotificationTargets(cargo);
-    if (objetivoArray.length === 0 && cargoArray.length === 0) {
+    const objetivoArray = firmaAutomatica
+        ? ['all']
+        : normalizeNotificationTargets(objetivo);
+    const cargoArray = firmaAutomatica ? [] : normalizeNotificationTargets(cargo);
+    const roleIds = firmaAutomatica ? [] : normalizeNotificationTargets(roles);
+    if (objetivoArray.length === 0 && cargoArray.length === 0 && roleIds.length === 0) {
         return res.status(400).send('Falta el objetivo de la notificación');
     }
 
@@ -1271,12 +1428,18 @@ const crearNotificacionDocumento = async (req, res) => {
         return res.status(error.statusCode || 400).send(error.message);
     }
 
+    if (firmaAutomatica && scheduleConfig.isScheduled) {
+        return res
+            .status(400)
+            .send('La firma automática se registra al crear la notificación y no puede programarse');
+    }
+
     try {
         const restipo = await TipoNotificacion.findOne({ value: { $eq: String(tipo) } });
         if (!restipo) {
             return res.status(400).send('Tipo de notificación no encontrado');
         }
-        const trabajadores = await getTargetWorkers(objetivoArray, cargoArray);
+        const trabajadores = await getTargetWorkers(objetivoArray, cargoArray, roleIds);
         if (trabajadores.length === 0) {
             return res.status(400).send('No se encontraron destinatarios para la notificación');
         }
@@ -1298,6 +1461,7 @@ const crearNotificacionDocumento = async (req, res) => {
         const nuevoDocumento = new documentos_MongooseModel({
             _id: new mongoose.Types.ObjectId(),
             tipo: resTipodocumento._id,
+            nombreOriginal: path.basename(String(archivo.originalname || 'documento')),
             url: savedAttachment.finalPath,
             formato: savedAttachment.mimeType || archivo.mimetype,
             fecha: fechaNotificacion,
@@ -1313,6 +1477,7 @@ const crearNotificacionDocumento = async (req, res) => {
             url: savedAttachment.finalPath,
             fecha: fechaNotificacion,
             requiereFirma,
+            firmaAutomatica,
             isScheduled: scheduleConfig.isScheduled,
             scheduledDate: scheduleConfig.scheduledDate,
             documentoId: nuevoDocumento._id,
@@ -1333,7 +1498,7 @@ const crearNotificacionDocumento = async (req, res) => {
             expiresAtBase: fechaNotificacion,
         });
 
-        if (!scheduleConfig.isScheduled) {
+        if (!scheduleConfig.isScheduled && !firmaAutomatica) {
             await assignNotificationToWorkers({
                 trabajadores,
                 nuevaNotificacion,
@@ -1444,18 +1609,25 @@ const infoNotificaciones = async (req, res) => {
     }
 };
 const buscarNotificacion = async (req, res) => {
-    const { token, inicio, fin } = req.body;
+    const { token, inicio, fin, todas } = req.body;
     const tokenValido = await Token.validartoken(token);
     if (tokenValido.valid) {
+        const buscarTodas = parseBoolean(todas);
         const fechainicio = Dayjs(inicio).startOf('day').toDate();
         const fechafin = Dayjs(fin).endOf('day').toDate();
-        try {
-            const notificaciones = await notificaciones_MongooseModel.find({
+        const filtro = buscarTodas
+            ? {}
+            : {
                 fecha: {
                     $gte: fechainicio,
                     $lte: fechafin,
                 },
-            });
+            };
+
+        try {
+            const notificaciones = await notificaciones_MongooseModel
+                .find(filtro)
+                .sort({ fecha: -1 });
             const notificacionesConTipo = await Promise.all(
                 notificaciones.map(async (notificacion) => {
                     const tipo = await TipoNotificacion.findById(
@@ -1470,6 +1642,7 @@ const buscarNotificacion = async (req, res) => {
                         url: notificacion.url,
                         fecha: notificacion.fecha,
                         requiereFirma: Boolean(notificacion.requiereFirma),
+                        firmaAutomatica: Boolean(notificacion.firmaAutomatica),
                         programada: Boolean(notificacion.programada),
                         fechaProgramacion: notificacion.fechaProgramacion,
                         fechaEnvio: notificacion.fechaEnvio,
@@ -1533,6 +1706,7 @@ const detallesNotificacion = async (req, res) => {
         const trabajadoresNoVistos = [];
         const validacionDetalle = {
             required: Boolean(notificacion.requiereFirma),
+            firmaAutomatica: Boolean(notificacion.firmaAutomatica),
             resumen: {
                 pendientes: 0,
                 firmados: 0,
@@ -1560,6 +1734,7 @@ const detallesNotificacion = async (req, res) => {
                 const validationItem = {
                     ...item,
                     estado: getEffectiveValidationState(validacion) || 'pendiente',
+                    firmaAutomatica: Boolean(validacion?.firmaAutomatica),
                     expiresAt: validacion?.expiresAt || null,
                     firmadoAt: validacion?.firmadoAt || null,
                     aceptadoAt: validacion?.aceptadoAt || null,
@@ -1701,6 +1876,12 @@ const firmarValidacionNotificacion = async (req, res) => {
         clearValidationCode(validation);
         await validation.save();
 
+        if (validation.documentoEmpresa) {
+            req.io?.to('permission:documentos_empresa.ver').emit('documentosEmpresaActualizados', {
+                id: String(validation.documentoEmpresa),
+            });
+        }
+
         return res.status(200).json(buildValidationResponse(validation));
     } catch (error) {
         logHandledError('Error al firmar notificación', error);
@@ -1754,6 +1935,12 @@ const aceptarValidacionNotificacion = async (req, res) => {
         validation.aceptadoAt = new Date();
         clearValidationCode(validation);
         await validation.save();
+
+        if (validation.documentoEmpresa) {
+            req.io?.to('permission:documentos_empresa.ver').emit('documentosEmpresaActualizados', {
+                id: String(validation.documentoEmpresa),
+            });
+        }
 
         return res.status(200).json(buildValidationResponse(validation));
     } catch (error) {
@@ -1902,6 +2089,10 @@ const buildPushDataFromNotification = async (notificacion) => {
 };
 
 const deliverNotification = async ({ notificacion, io }) => {
+    if (notificacion.firmaAutomatica) {
+        return;
+    }
+
     const trabajadores = await trabajador_MongooseModel.find({
         _id: { $in: notificacion.trabajadores || [] },
     });
@@ -2012,7 +2203,7 @@ const pushNotificationOLD = async (req, res) => {
         });
 
         if (ok) {
-            req.io.to('role:administracion').to('role:supervisor').emit('notificacionPush', {
+            req.io.to('permission:notificaciones.ver').emit('notificacionPush', {
                 title: titulo,
                 body: mensaje,
             });
@@ -2038,7 +2229,7 @@ const descargarNotificacionDocumento = async (req, res) => {
             return res.status(404).send('Documento no encontrado');
         }
 
-        const requesterRole = String(req.authUser?.cargo || '').trim().toLowerCase();
+        const requesterRole = String(req.authz?.arquetipo || req.authUser?.arquetipo || req.authUser?.cargo || '').trim().toLowerCase();
         const requesterRut = String(req.authUser?.Rut || req.auth?.rut || '').trim();
         const canAccessAllNotifications = ['administracion', 'supervisor'].includes(requesterRole);
 
@@ -2051,8 +2242,13 @@ const descargarNotificacionDocumento = async (req, res) => {
             }
         }
 
-        const safeFileName = path.basename(String(notificacion.url));
-        const uploadPath = resolveNotificationAttachmentPath(notificacion.url);
+        const companyDocument = notificacion.documentoEmpresa
+            ? await DocumentoEmpresa.findById(notificacion.documentoEmpresa)
+            : null;
+        const safeFileName = path.basename(String(companyDocument?.archivo?.nombreOriginal || notificacion.url));
+        const uploadPath = companyDocument
+            ? resolveCompanyDocumentPath(companyDocument.archivo.rutaRelativa)
+            : resolveNotificationAttachmentPath(notificacion.url);
         if (!uploadPath) {
             return res.status(404).send('Documento no encontrado');
         }
@@ -2061,7 +2257,7 @@ const descargarNotificacionDocumento = async (req, res) => {
             ? await documentos_MongooseModel.findById(notificacion.documento).select('formato')
             : null;
         const mimeType = getNotificationAttachmentMimeType(
-            documento?.formato,
+            companyDocument?.archivo?.mimeType || documento?.formato,
             uploadPath
         ) || 'application/octet-stream';
         if (isNotificationImageMimeType(mimeType)) {
@@ -2089,7 +2285,10 @@ module.exports = {
     detallesNotificacion,
     infoNotificaciones,
     pushNotification,
+    createNotificationRecord,
+    createSignatureValidations,
     createSystemNotificationForWorkers,
+    createCompanyDocumentSignatureNotification,
     dispatchDueScheduledNotifications,
     pushNotificationOLD,
     crearNotificacionDocumento,

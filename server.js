@@ -28,10 +28,14 @@ const {
 } = require('./src/controllers/verificacionTerreno.controller.js');
 const mongoSanitize = require('express-mongo-sanitize');
 const { validartoken } = require('./src/controllers/token.controller.js');
+const { ensureAccessControlCatalog, getUserAccessContext } = require('./src/services/accessControl.service.js');
 const { initializeAteWhatsAppClient } = require('./src/utils/whatsappClient.js');
 const {
   dispatchAteOverdueNotifications,
 } = require('./src/utils/ateOverdueNotifications.js');
+const {
+  dispatchCompanyDocumentExpirationNotifications,
+} = require('./src/utils/companyDocumentExpirationNotifications.js');
 const {
   buildLastUbicationUpdate,
   buildTrackingEntry,
@@ -87,9 +91,6 @@ const corsOptions = {
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Refresh-Token'],
 };
-
-const isPrivilegedRole = (cargo) =>
-  ['administracion', 'supervisor'].includes(String(cargo || '').trim().toLowerCase());
 
 const hasCoordinateValue = (value) =>
   value !== null && value !== undefined && value !== '';
@@ -263,13 +264,17 @@ const usuariosConectados = globalThis.usuariosConectados; // Lista local en memo
 console.log(uri)
 db.mongoose
   .connect(uri)
-  .then(() => {
+  .then(async () => {
     console.log('Conexión a la base de datos exitosa');
+    await ensureAccessControlCatalog();
     dispatchDueScheduledNotifications(io).catch((error) => {
       logHandledError('Error al despachar notificaciones programadas al iniciar', error);
     });
     dispatchAteOverdueNotifications({ io }).catch((error) => {
       logHandledError('Error al notificar ATE atrasadas al iniciar', error);
+    });
+    dispatchCompanyDocumentExpirationNotifications({ io }).catch((error) => {
+      logHandledError('Error al notificar vencimientos documentales al iniciar', error);
     });
     generarVerificacionesTerrenoDelDia('al iniciar').catch((error) => {
       logHandledError('Error al generar verificaciones en terreno al iniciar', error);
@@ -336,7 +341,7 @@ const detenerBotSystemd = async () => {
 
 const emitirEstadoBot = async () => {
   const estado = await obtenerEstadoBot();
-  io.to('role:administracion').to('role:supervisor').emit('estadoActualizado', estado);
+  io.to('permission:panel.bot.gestionar').emit('estadoActualizado', estado);
   return estado;
 };
 //
@@ -348,7 +353,7 @@ const enviarNotificacion = (titulo, cuerpo, data = {}) => {
     data,
     timestamp: new Date().toISOString(),
   };
-  io.to('role:administracion').to('role:supervisor').emit('notificacion', notification);
+  io.to('permission:notificaciones.ver').emit('notificacion', notification);
 };
 
 const generarVerificacionesTerrenoDelDia = async (contexto) => {
@@ -386,7 +391,7 @@ const emitirSeguimientoTrabajador = (eventName, payload) => {
     return;
   }
 
-  io.to('role:administracion').to('role:supervisor').emit(eventName, trackingPayload);
+  io.to('permission:seguimiento.ver').emit(eventName, trackingPayload);
 };
 
 io.use(async (socket, next) => {
@@ -402,11 +407,14 @@ io.use(async (socket, next) => {
       return next(new Error('No autorizado'));
     }
 
+    const access = await getUserAccessContext(tokenValido.user);
     socket.data.user = {
       id: String(tokenValido.user._id),
       rut: tokenValido.user.Rut,
       nombre: tokenValido.user.Nombre,
-      cargo: tokenValido.user.cargo,
+      cargo: access.arquetipo,
+      arquetipo: access.arquetipo,
+      permisos: access.permisos,
     };
 
     return next();
@@ -422,6 +430,9 @@ io.on('connection', (socket) => {
   socket.join(`user:${currentUser.id}`);
   socket.join(`worker:${currentUser.rut}`);
   socket.join(`role:${currentUser.cargo}`);
+  currentUser.permisos.forEach((permission) => socket.join(`permission:${permission}`));
+
+  const hasPermission = (permission) => currentUser.permisos.includes(permission);
 
   // Evento para registrar conexión de un trabajador
   socket.on("registrarTrabajador", async ({ ubicacion }) => {
@@ -431,7 +442,7 @@ io.on('connection', (socket) => {
         return;
       }
       const safeRut = String(rut).trim();
-      const trabajador = await trabajador_MongooseModel.findOne({ Rut: safeRut }).select('Nombre cargo');
+      const trabajador = await trabajador_MongooseModel.findOne({ Rut: safeRut }).select('Nombre cargo arquetipo');
 
       if (!trabajador) {
         return;
@@ -500,13 +511,13 @@ io.on('connection', (socket) => {
     }, 5000)
   );
   socket.on('estadoBot', async () => {
-    if (!isPrivilegedRole(currentUser.cargo)) {
+    if (!hasPermission('panel.bot.gestionar')) {
       return;
     }
     await emitirEstadoBot();
   });
   socket.on('actualizarEstadoBot', async (estado) => {
-    if (!isPrivilegedRole(currentUser.cargo)) {
+    if (!hasPermission('panel.bot.gestionar')) {
       return;
     }
 
@@ -515,10 +526,10 @@ io.on('connection', (socket) => {
       ? await iniciarBotSystemd()
       : await detenerBotSystemd();
 
-    io.to('role:administracion').to('role:supervisor').emit('estadoActualizado', estadoActualizado);
+    io.to('permission:panel.bot.gestionar').emit('estadoActualizado', estadoActualizado);
   });
   socket.on('actualizarDireccion', async (data) => {
-    if (!isPrivilegedRole(currentUser.cargo)) {
+    if (!hasPermission('direcciones.gestionar')) {
       return;
     }
     const { id, lat, lng } = data;
@@ -530,7 +541,7 @@ io.on('connection', (socket) => {
       direccionexistente.LAT = lat;
       direccionexistente.LNG = lng;
       await direccionexistente.save();
-      io.to('role:administracion').to('role:supervisor').emit('direccionActualizada', {
+      io.to('permission:direcciones.ver').emit('direccionActualizada', {
         id,
         lat,
         lng,
@@ -545,20 +556,22 @@ io.on('connection', (socket) => {
     }
   });
   socket.on('nuevaAte', (data) => {
-    if (!isPrivilegedRole(currentUser.cargo)) {
+    if (!hasPermission('ate.editar')) {
       return;
     }
-    io.to('role:administracion').to('role:supervisor').emit('actualizarAte', data);
+    io.to('permission:ate.ver').emit('actualizarAte', data);
   });
   socket.on('nuevaNovedad', (data) => {
-    if (!isPrivilegedRole(currentUser.cargo)) {
+    if (!hasPermission('novedades.editar')) {
       return;
     }
-    io.to('role:administracion').to('role:supervisor').emit('actualizarNovedad', data);
+    io.to('permission:novedades.ver').emit('actualizarNovedad', data);
   });
-  socket.on('updateWorker', () =>
-    io.to('role:administracion').to('role:supervisor').emit('updateWorker')
-  );
+  socket.on('updateWorker', () => {
+    if (hasPermission('trabajadores.editar')) {
+      io.to('permission:trabajadores.ver').emit('updateWorker');
+    }
+  });
   socket.on("disconnect", async () => {
     const usuario = usuariosConectados[socket.id];
 
@@ -613,6 +626,12 @@ cron.schedule('0 * * * *', () => {
 cron.schedule('0 8 * * *', () => {
   dispatchAteOverdueNotifications({ io }).catch((error) => {
     logHandledError('Error al notificar ATE atrasadas programadas', error);
+  });
+}, { timezone: 'America/Santiago' });
+
+cron.schedule('15 8 * * *', () => {
+  dispatchCompanyDocumentExpirationNotifications({ io }).catch((error) => {
+    logHandledError('Error al notificar vencimientos documentales', error);
   });
 }, { timezone: 'America/Santiago' });
 

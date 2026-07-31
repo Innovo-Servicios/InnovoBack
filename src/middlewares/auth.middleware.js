@@ -1,4 +1,5 @@
 const Token = require('../controllers/token.controller.js');
+const { getUserAccessContext } = require('../services/accessControl.service.js');
 
 const getBearerToken = (authorizationHeader) => {
     if (!authorizationHeader || typeof authorizationHeader !== 'string') {
@@ -34,6 +35,7 @@ const requireAuth = async (req, res, next) => {
         req.auth = tokenValido.token;
         req.authUser = tokenValido.user;
         req.accessToken = token;
+        req.authz = await getUserAccessContext(tokenValido.user);
 
         if (req.body && typeof req.body === 'object') {
             // Internal compatibility for legacy controllers. Clients must still
@@ -51,7 +53,7 @@ const requireRole = (...allowedRoles) => {
     const normalizedRoles = allowedRoles.map((role) => String(role).trim().toLowerCase());
 
     return (req, res, next) => {
-        const userRole = String(req.authUser?.cargo || '').trim().toLowerCase();
+        const userRole = String(req.authz?.arquetipo || req.authUser?.arquetipo || req.authUser?.cargo || '').trim().toLowerCase();
         if (!userRole || !normalizedRoles.includes(userRole)) {
             return res.status(403).json({ message: 'Permisos insuficientes' });
         }
@@ -60,8 +62,34 @@ const requireRole = (...allowedRoles) => {
     };
 };
 
+const requirePermission = (...requiredPermissions) => {
+    const normalized = requiredPermissions.map((permission) => String(permission).trim().toLowerCase());
+
+    return (req, res, next) => {
+        const permissions = new Set(req.authz?.permisos || []);
+        if (!normalized.every((permission) => permissions.has(permission))) {
+            return res.status(403).json({ message: 'Permisos insuficientes' });
+        }
+        return next();
+    };
+};
+
+const requireAnyPermission = (...requiredPermissions) => {
+    const normalized = requiredPermissions.map((permission) => String(permission).trim().toLowerCase());
+
+    return (req, res, next) => {
+        const permissions = new Set(req.authz?.permisos || []);
+        if (!normalized.some((permission) => permissions.has(permission))) {
+            return res.status(403).json({ message: 'Permisos insuficientes' });
+        }
+        return next();
+    };
+};
+
 module.exports = {
     extractAccessToken,
     requireAuth,
+    requireAnyPermission,
+    requirePermission,
     requireRole,
 };
