@@ -15,6 +15,7 @@ const {
 const { documentos_MongooseModel } = require('../models/documentos.model.js');
 const { DocumentoEmpresa } = require('../models/documentoEmpresa.model.js');
 const { resolveCompanyDocumentPath } = require('../services/companyDocuments.service.js');
+const { ensureCompanyDocumentSignedPdf } = require('../services/companyDocumentSignedPdf.service.js');
 const {
     notificacion_validacion_MongooseModel,
 } = require('../models/notificacion_validacion.model.js');
@@ -265,6 +266,16 @@ const formatValidationForClient = (validation, required = false, options = {}) =
         intentos,
         attemptsRemaining: Math.max(maxIntentos - intentos, 0),
     };
+
+    if (validation.codigoValidacion) {
+        formattedValidation.codigoValidacion = validation.codigoValidacion;
+    }
+
+    if (validation.documentoFirmado?.rutaRelativa) {
+        formattedValidation.documentoFirmadoUrl = `/documentoEmpresa/firmas/${validation._id}/documento-firmado`;
+        formattedValidation.documentoFirmadoNombre = validation.documentoFirmado.nombreOriginal || 'documento-firmado.pdf';
+        formattedValidation.verificacionUrl = validation.documentoFirmado.verificationUrl || null;
+    }
 
     if (options.includeCode) {
         formattedValidation.codigo = codigo;
@@ -1937,6 +1948,7 @@ const aceptarValidacionNotificacion = async (req, res) => {
         await validation.save();
 
         if (validation.documentoEmpresa) {
+            await ensureCompanyDocumentSignedPdf({ validation, trabajador });
             req.io?.to('permission:documentos_empresa.ver').emit('documentosEmpresaActualizados', {
                 id: String(validation.documentoEmpresa),
             });

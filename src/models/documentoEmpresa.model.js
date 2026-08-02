@@ -91,6 +91,13 @@ const documentoEmpresaSchema = new mongoose.Schema({
         nombre: { type: String, default: 'Paola Olivares', trim: true },
         cargo: { type: String, default: 'Prevencion de Riesgos', trim: true },
     },
+    plantillaDocumental: {
+        plantilla: { type: mongoose.Schema.Types.ObjectId, ref: 'DocumentoPlantilla' },
+        nombre: { type: String, default: '', trim: true },
+        version: { type: Number, min: 1 },
+        contenido: { type: String, default: '', trim: true },
+        textoAceptacion: { type: String, default: '', trim: true },
+    },
     aprobaciones: [aprobacionDocumentoSchema],
     controlCambios: [controlCambioDocumentoSchema],
     documentosRelacionados: [documentoRelacionadoSchema],

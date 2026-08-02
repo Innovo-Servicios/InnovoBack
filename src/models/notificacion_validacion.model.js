@@ -79,6 +79,20 @@ const notificacionValidacionSchema = new mongoose.Schema(
         regeneradoAt: {
             type: Date,
         },
+        codigoValidacion: {
+            type: String,
+            trim: true,
+            uppercase: true,
+        },
+        documentoFirmado: {
+            nombreOriginal: { type: String, default: '' },
+            nombreAlmacenado: { type: String, default: '' },
+            rutaRelativa: { type: String, default: '' },
+            mimeType: { type: String, default: 'application/pdf' },
+            tamano: { type: Number, default: 0, min: 0 },
+            generadoAt: { type: Date },
+            verificationUrl: { type: String, default: '' },
+        },
     },
     { timestamps: true }
 );
@@ -94,6 +108,13 @@ notificacionValidacionSchema.index(
     {
         unique: true,
         partialFilterExpression: { documentoEmpresa: { $type: 'objectId' } },
+    }
+);
+notificacionValidacionSchema.index(
+    { codigoValidacion: 1 },
+    {
+        unique: true,
+        partialFilterExpression: { codigoValidacion: { $type: 'string' } },
     }
 );
 

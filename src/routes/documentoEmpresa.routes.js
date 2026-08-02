@@ -19,10 +19,17 @@ router.post('/categorias', requirePermission('documentos_empresa.categorias.gest
 router.put('/categorias/:id', requirePermission('documentos_empresa.categorias.gestionar'), controller.updateCategory);
 router.delete('/categorias/:id', requirePermission('documentos_empresa.categorias.gestionar'), controller.archiveCategory);
 
+router.get('/plantillas', requirePermission('documentos_empresa.ver'), controller.listTemplates);
+router.post('/plantillas', requirePermission('documentos_empresa.gestionar'), controller.createTemplate);
+router.put('/plantillas/:templateId', requirePermission('documentos_empresa.gestionar'), controller.updateTemplate);
+router.delete('/plantillas/:templateId', requirePermission('documentos_empresa.gestionar'), controller.archiveTemplate);
+router.post('/plantillas/:templateId/enviar', requirePermission('documentos_empresa.firmas.gestionar'), controller.sendTemplate);
+
 router.get('/resumen', requirePermission('documentos_empresa.ver'), controller.getSummary);
 router.get('/firmantes/candidatos', requirePermission('documentos_empresa.firmas.gestionar'), controller.getCandidates);
 router.get('/disponibles', controller.listAvailableDocuments);
 router.get('/control-cambios', requirePermission('documentos_empresa.ver'), controller.listChangeControl);
+router.get('/firmas/:validationId/documento-firmado', controller.downloadSignedDocument);
 router.get('/archivo/:id/:fileName', controller.downloadDocument);
 
 router.get('/', requirePermission('documentos_empresa.ver'), controller.listDocuments);

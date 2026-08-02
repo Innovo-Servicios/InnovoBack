@@ -51,6 +51,8 @@ const buildEvidenceRows = ({
             estadoFirma: state,
             firmadoAt: validation.firmadoAt || null,
             aceptadoAt: validation.aceptadoAt || null,
+            codigoValidacion: validation.codigoValidacion || '',
+            documentoFirmado: validation.documentoFirmado?.rutaRelativa ? 'si' : 'no',
             vencimientoCodigo: validation.expiresAt || null,
             intentos: validation.intentos || 0,
         };
@@ -121,6 +123,8 @@ const buildEvidenceCsv = (evidence) => {
         'estado_firma',
         'firmado_at',
         'aceptado_at',
+        'codigo_validacion',
+        'documento_firmado',
         'vencimiento_codigo',
         'intentos',
     ];
@@ -137,6 +141,8 @@ const buildEvidenceCsv = (evidence) => {
         row.estadoFirma,
         formatDateTime(row.firmadoAt),
         formatDateTime(row.aceptadoAt),
+        row.codigoValidacion,
+        row.documentoFirmado,
         formatDateTime(row.vencimientoCodigo),
         row.intentos,
     ].map(escapeCsv).join(';'));
@@ -163,6 +169,7 @@ const buildEvidenceHtml = (evidence) => {
             <td>${escapeHtml(row.estadoFirma)}</td>
             <td>${escapeHtml(formatDateTime(row.firmadoAt))}</td>
             <td>${escapeHtml(formatDateTime(row.aceptadoAt))}</td>
+            <td>${escapeHtml(row.codigoValidacion || '-')}</td>
         </tr>
     `).join('');
     const title = `Evidencia documental ${documento.codigoVersionado || documento.titulo}`;
@@ -235,9 +242,10 @@ const buildEvidenceHtml = (evidence) => {
                 <th>Firma</th>
                 <th>Firmado</th>
                 <th>Aceptado</th>
+                <th>Codigo</th>
             </tr>
         </thead>
-        <tbody>${rows || '<tr><td colspan="8">Sin registros de difusion.</td></tr>'}</tbody>
+        <tbody>${rows || '<tr><td colspan="9">Sin registros de difusion.</td></tr>'}</tbody>
     </table>
 
     <footer>

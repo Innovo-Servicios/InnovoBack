@@ -155,6 +155,27 @@ const saveCompanyDocumentFile = async ({ categorySlug, file }) => {
     };
 };
 
+const saveGeneratedCompanyDocumentPdf = async ({ categorySlug, originalName, buffer }) => {
+    const { directory, relative } = await ensureCategoryDirectory(categorySlug);
+    const fileName = buildStoredFileName(`${originalName || 'documento-generado'}.pdf`);
+    const absolutePath = path.join(directory, fileName);
+    if (!absolutePath.startsWith(`${directory}${path.sep}`)) {
+        throw new Error('Ruta de archivo inválida');
+    }
+    const content = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || '');
+    await fs.promises.writeFile(absolutePath, content, { flag: 'wx' });
+    return {
+        absolutePath,
+        file: {
+            nombreOriginal: path.basename(`${originalName || 'documento-generado'}.pdf`),
+            nombreAlmacenado: fileName,
+            rutaRelativa: `${relative}/${fileName}`,
+            mimeType: 'application/pdf',
+            tamano: content.length,
+        },
+    };
+};
+
 const deleteSavedFile = async (absolutePath) => {
     if (!absolutePath || !absolutePath.startsWith(`${COMPANY_DOCUMENTS_ROOT}${path.sep}`)) return;
     await fs.promises.unlink(absolutePath).catch(() => undefined);
@@ -227,5 +248,6 @@ module.exports = {
     resolveInsideRoot,
     resolveCompanyDocumentPath,
     saveCompanyDocumentFile,
+    saveGeneratedCompanyDocumentPdf,
     slugifyCategory,
 };

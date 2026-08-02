@@ -19,6 +19,7 @@ const permiso_Mongoose = require('../models/permiso.model.js');
 const arquetipoRol_Mongoose = require('../models/arquetipoRol.model.js');
 const categoriaDocumentoEmpresaModel = require('../models/categoriaDocumentoEmpresa.model.js');
 const documentoEmpresaModel = require('../models/documentoEmpresa.model.js');
+const documentoPlantillaModel = require('../models/documentoPlantilla.model.js');
 const Region= require('../models/region.model.js');
 // const asignacion = require('./asignacion_Mongoose.js');
 
@@ -45,6 +46,7 @@ db.permiso_Mongoose = permiso_Mongoose;
 db.arquetipoRol_Mongoose = arquetipoRol_Mongoose;
 db.categoriaDocumentoEmpresaModel = categoriaDocumentoEmpresaModel;
 db.documentoEmpresaModel = documentoEmpresaModel;
+db.documentoPlantillaModel = documentoPlantillaModel;
 // db.asignacionModel = asignacionModel;
 db.Region= Region;
 module.exports = db;

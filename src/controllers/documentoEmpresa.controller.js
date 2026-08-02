@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const path = require('node:path');
 const { CategoriaDocumentoEmpresa } = require('../models/categoriaDocumentoEmpresa.model.js');
 const { DocumentoEmpresa } = require('../models/documentoEmpresa.model.js');
+const { DocumentoPlantilla } = require('../models/documentoPlantilla.model.js');
 const { notificaciones_MongooseModel: Notificacion } = require('../models/notificacion.model.js');
 const { notificacion_validacion_MongooseModel: NotificacionValidacion } = require('../models/notificacion_validacion.model.js');
 const { notificacion_vista_MongooseModel: NotificacionVista } = require('../models/notificacion_vista.model.js');
@@ -24,6 +25,7 @@ const {
     normalizeName,
     resolveCompanyDocumentPath,
     saveCompanyDocumentFile,
+    saveGeneratedCompanyDocumentPdf,
     slugifyCategory,
 } = require('../services/companyDocuments.service.js');
 const {
@@ -31,6 +33,11 @@ const {
     buildEvidenceCsv,
     buildEvidencePdf,
 } = require('../services/companyDocumentEvidence.service.js');
+const {
+    buildTemplateMasterPdf,
+    ensureCompanyDocumentSignedPdf,
+    resolveSignedDocumentPath,
+} = require('../services/companyDocumentSignedPdf.service.js');
 
 const objectId = (value) => mongoose.isValidObjectId(value) ? String(value) : null;
 const parseJson = (value, fallback) => {
@@ -169,6 +176,23 @@ const serializeCategory = (category, count = undefined) => ({
     ...(count === undefined ? {} : { documentos: count }),
 });
 
+const serializeTemplate = (template) => ({
+    id: String(template._id),
+    nombre: template.nombre,
+    descripcion: template.descripcion || '',
+    contenido: template.contenido || '',
+    textoAceptacion: template.textoAceptacion || '',
+    codigoBase: template.codigoBase || '',
+    categoriaId: template.categoria ? String(template.categoria._id || template.categoria) : null,
+    categoria: template.categoria && typeof template.categoria === 'object'
+        ? serializeCategory(template.categoria)
+        : null,
+    version: template.version || 1,
+    activo: template.activo !== false,
+    createdAt: template.createdAt,
+    updatedAt: template.updatedAt,
+});
+
 const serializeDocument = (document, validationMap = new Map()) => {
     const category = document.categoria;
     const effectiveValidationMap = new Map(
@@ -201,6 +225,12 @@ const serializeDocument = (document, validationMap = new Map()) => {
             expiresAt: validation?.expiresAt || null,
             firmadoAt: validation?.firmadoAt || null,
             aceptadoAt: validation?.aceptadoAt || null,
+            codigoValidacion: validation?.codigoValidacion || null,
+            documentoFirmadoUrl: validation?.documentoFirmado?.rutaRelativa
+                ? `/documentoEmpresa/firmas/${validation._id}/documento-firmado`
+                : null,
+            documentoFirmadoNombre: validation?.documentoFirmado?.nombreOriginal || null,
+            verificacionUrl: validation?.documentoFirmado?.verificationUrl || null,
         };
     });
     const completed = physical.filter(({ estado }) => estado === 'firmado').length;
@@ -227,6 +257,11 @@ const serializeDocument = (document, validationMap = new Map()) => {
             nombre: document.responsableSistemaGestion?.nombre || '',
             cargo: document.responsableSistemaGestion?.cargo || '',
         },
+        plantillaDocumental: document.plantillaDocumental?.contenido ? {
+            plantillaId: document.plantillaDocumental.plantilla ? String(document.plantillaDocumental.plantilla) : null,
+            nombre: document.plantillaDocumental.nombre || '',
+            version: document.plantillaDocumental.version || 1,
+        } : null,
         aprobaciones: (document.aprobaciones || []).map(normalizeApprovalRecordForClient),
         aprobacion: getApprovalSummary(document.aprobaciones || []),
         controlCambios: (document.controlCambios || []).map((change) => ({
@@ -439,6 +474,237 @@ const archiveCategory = async (req, res) => {
     return res.status(204).send();
 };
 
+const listTemplates = async (_req, res) => {
+    try {
+        const templates = await DocumentoPlantilla.find({ activo: { $ne: false } })
+            .populate('categoria')
+            .sort({ updatedAt: -1, nombre: 1 });
+        return res.json(templates.map(serializeTemplate));
+    } catch (error) {
+        return res.status(500).json({ message: 'No se pudieron cargar las plantillas' });
+    }
+};
+
+const createTemplate = async (req, res) => {
+    const nombre = normalizeName(req.body.nombre);
+    const contenido = String(req.body.contenido || '').trim();
+    if (nombre.length < 2 || contenido.length < 10) {
+        return res.status(400).json({ message: 'Nombre o contenido de plantilla inválido' });
+    }
+    const categoryId = objectId(req.body.categoriaId || req.body.categoria);
+    const category = categoryId
+        ? await CategoriaDocumentoEmpresa.findOne({ _id: categoryId, activo: true })
+        : null;
+    if (categoryId && !category) return res.status(400).json({ message: 'Categoría no disponible' });
+
+    try {
+        const template = await DocumentoPlantilla.create({
+            nombre,
+            descripcion: normalizeName(req.body.descripcion),
+            contenido,
+            textoAceptacion: String(req.body.textoAceptacion || '').trim() ||
+                'Declaro haber recibido, leido, comprendido y aceptado el contenido de este documento.',
+            codigoBase: normalizeDocumentCode(req.body.codigoBase),
+            categoria: category?._id,
+            creadoPor: requestUserId(req),
+            actualizadoPor: requestUserId(req),
+        });
+        await template.populate('categoria');
+        return res.status(201).json(serializeTemplate(template));
+    } catch (error) {
+        return res.status(500).json({ message: 'No se pudo crear la plantilla' });
+    }
+};
+
+const updateTemplate = async (req, res) => {
+    const id = objectId(req.params.templateId);
+    const template = id ? await DocumentoPlantilla.findById(id) : null;
+    if (!template || template.activo === false) {
+        return res.status(404).json({ message: 'Plantilla no encontrada' });
+    }
+    const nombre = req.body.nombre === undefined ? template.nombre : normalizeName(req.body.nombre);
+    const contenido = req.body.contenido === undefined ? template.contenido : String(req.body.contenido || '').trim();
+    if (nombre.length < 2 || contenido.length < 10) {
+        return res.status(400).json({ message: 'Nombre o contenido de plantilla inválido' });
+    }
+    const categoryId = req.body.categoriaId === undefined
+        ? (template.categoria ? String(template.categoria) : null)
+        : objectId(req.body.categoriaId || req.body.categoria);
+    const category = categoryId
+        ? await CategoriaDocumentoEmpresa.findOne({ _id: categoryId, activo: true })
+        : null;
+    if (categoryId && !category) return res.status(400).json({ message: 'Categoría no disponible' });
+
+    template.nombre = nombre;
+    template.descripcion = req.body.descripcion === undefined ? template.descripcion : normalizeName(req.body.descripcion);
+    template.contenido = contenido;
+    template.textoAceptacion = req.body.textoAceptacion === undefined
+        ? template.textoAceptacion
+        : String(req.body.textoAceptacion || '').trim();
+    template.codigoBase = req.body.codigoBase === undefined ? template.codigoBase : normalizeDocumentCode(req.body.codigoBase);
+    template.categoria = category?._id || undefined;
+    template.version = (template.version || 1) + 1;
+    template.actualizadoPor = requestUserId(req);
+    await template.save();
+    await template.populate('categoria');
+    return res.json(serializeTemplate(template));
+};
+
+const archiveTemplate = async (req, res) => {
+    const id = objectId(req.params.templateId);
+    const template = id ? await DocumentoPlantilla.findById(id) : null;
+    if (!template) return res.status(404).json({ message: 'Plantilla no encontrada' });
+    template.activo = false;
+    template.actualizadoPor = requestUserId(req);
+    await template.save();
+    return res.status(204).send();
+};
+
+const sendTemplate = async (req, res) => {
+    const id = objectId(req.params.templateId);
+    const template = id ? await DocumentoPlantilla.findById(id).populate('categoria') : null;
+    if (!template || template.activo === false) {
+        return res.status(404).json({ message: 'Plantilla no encontrada' });
+    }
+    const categoryId = objectId(req.body.categoriaId || req.body.categoria) ||
+        (template.categoria ? String(template.categoria._id || template.categoria) : null);
+    const category = categoryId
+        ? await CategoriaDocumentoEmpresa.findOne({ _id: categoryId, activo: true })
+        : null;
+    if (!category) return res.status(400).json({ message: 'Debes seleccionar una categoría vigente' });
+
+    const titulo = normalizeName(req.body.titulo) || template.nombre;
+    const fechaEmision = req.body.fechaEmision === undefined ? new Date() : parseOptionalDate(req.body.fechaEmision);
+    const fechaVencimiento = req.body.fechaVencimiento === undefined ? null : parseOptionalDate(req.body.fechaVencimiento);
+    const diasAviso = Number.parseInt(req.body.diasAviso, 10) || 30;
+    if (titulo.length < 2 || fechaEmision === undefined || fechaVencimiento === undefined || diasAviso < 1 || diasAviso > 365) {
+        return res.status(400).json({ message: 'Datos del documento inválidos' });
+    }
+
+    const workers = await getTargetWorkers({
+        objetivo: req.body.objetivo === undefined ? ['all'] : req.body.objetivo,
+        cargo: req.body.cargo,
+        roles: req.body.roles,
+    });
+    if (workers.length === 0) return res.status(400).json({ message: 'No se encontraron trabajadores para enviar la plantilla' });
+
+    let saved;
+    let document;
+    try {
+        const code = await resolveDocumentCode({
+            body: { ...req.body, codigoBase: req.body.codigoBase || template.codigoBase },
+            category,
+            version: 1,
+        });
+        const masterPdf = await buildTemplateMasterPdf({
+            template,
+            documentData: {
+                titulo,
+                ...code,
+                version: 1,
+                categoria: category.nombre,
+                fechaEmision,
+                fechaVencimiento,
+                responsableNombre: req.body.responsableNombre,
+                responsableCargo: req.body.responsableCargo,
+            },
+        });
+        saved = await saveGeneratedCompanyDocumentPdf({
+            categorySlug: category.slug,
+            originalName: code.codigoVersionado || titulo,
+            buffer: masterPdf.buffer,
+        });
+
+        document = await DocumentoEmpresa.create({
+            serieId: crypto.randomUUID(),
+            version: 1,
+            ...code,
+            categoria: category._id,
+            titulo,
+            descripcion: normalizeName(req.body.descripcion) || template.descripcion || '',
+            esGlobal: true,
+            requiereAprobacion: false,
+            requiereFirmaDigital: true,
+            responsableSistemaGestion: normalizeResponsible(req.body),
+            plantillaDocumental: {
+                plantilla: template._id,
+                nombre: template.nombre,
+                version: template.version,
+                contenido: template.contenido,
+                textoAceptacion: template.textoAceptacion,
+            },
+            aprobaciones: [],
+            controlCambios: [
+                buildControlChange({
+                    version: 1,
+                    descripcion: req.body.motivoCambio || `Documento generado desde plantilla ${template.nombre}`,
+                    actor: req.authUser,
+                }),
+            ],
+            documentosRelacionados: normalizeDocumentRelations(req.body.documentosRelacionados),
+            matricesRelacionadas: normalizeMatrixRelations(req.body.matricesRelacionadas),
+            estado: 'vigente',
+            publicadoAt: new Date(),
+            difusion: {
+                estado: 'pendiente',
+                alcanceDescripcion: normalizeName(req.body.alcanceDescripcion) || `Enviado a ${workers.length} trabajador(es)`,
+            },
+            fechaEmision,
+            fechaVencimiento,
+            diasAviso,
+            archivo: saved.file,
+            firmantesFisicos: [],
+            creadoPor: requestUserId(req),
+            actualizadoPor: requestUserId(req),
+        });
+        await document.populate(['categoria', 'documentosRelacionados.documento']);
+
+        const copy = buildDefaultDocumentSignatureCopy(document);
+        const result = await createCompanyDocumentSignatureNotification({
+            documento: document,
+            trabajadores: workers,
+            firmanteIds: new Map(),
+            titulo: normalizeName(req.body.tituloNotificacion) || copy.titulo,
+            mensaje: normalizeName(req.body.mensaje) || copy.mensaje,
+            contenido: normalizeName(req.body.contenidoNotificacion) || copy.contenido,
+            io: req.io,
+        });
+        const validationByWorker = new Map(result.validations.map((validation) => [
+            String(validation.trabajador),
+            validation,
+        ]));
+        document.difusion = {
+            estado: 'enviada',
+            ultimaNotificacion: result.notification._id,
+            difundidoAt: new Date(),
+            alcanceDescripcion: normalizeName(req.body.alcanceDescripcion) || `Enviado a ${workers.length} trabajador(es)`,
+        };
+        workers.forEach((worker) => {
+            const validation = validationByWorker.get(String(worker._id));
+            document.firmantesDigitales.push({
+                trabajador: worker._id,
+                nombre: worker.Nombre,
+                rut: worker.Rut,
+                cargo: worker.arquetipo || worker.cargo || '',
+                notificacion: result.notification._id,
+                validacion: validation?._id,
+            });
+        });
+        await document.save();
+        await document.populate(['categoria', 'documentosRelacionados.documento']);
+        req.io?.to('permission:documentos_empresa.ver').emit('documentosEmpresaActualizados', { id: String(document._id) });
+        return res.status(201).json({
+            message: `Plantilla enviada a ${workers.length} trabajador(es)`,
+            document: serializeDocument(document, await validationMapForDocuments([document])),
+            codigos: result.signatureBatch.codes || [],
+        });
+    } catch (error) {
+        if (document?._id) await DocumentoEmpresa.deleteOne({ _id: document._id });
+        await deleteSavedFile(saved?.absolutePath);
+        return res.status(error.status || 500).json({ message: error.message || 'No se pudo enviar la plantilla' });
+    }
+};
+
 const listDocuments = async (req, res) => {
     try {
         const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
@@ -520,6 +786,12 @@ const listAvailableDocuments = async (req, res) => {
                 firmadoAt: validation.firmadoAt || null,
                 aceptadoAt: validation.aceptadoAt || null,
                 expiresAt: validation.expiresAt || null,
+                codigoValidacion: validation.codigoValidacion || null,
+                documentoFirmadoUrl: validation.documentoFirmado?.rutaRelativa
+                    ? `/documentoEmpresa/firmas/${validation._id}/documento-firmado`
+                    : null,
+                documentoFirmadoNombre: validation.documentoFirmado?.nombreOriginal || null,
+                verificacionUrl: validation.documentoFirmado?.verificationUrl || null,
             } : {
                 required: document.requiereFirmaDigital === true,
                 notificacionId: null,
@@ -528,6 +800,10 @@ const listAvailableDocuments = async (req, res) => {
                 firmadoAt: null,
                 aceptadoAt: null,
                 expiresAt: null,
+                codigoValidacion: null,
+                documentoFirmadoUrl: null,
+                documentoFirmadoNombre: null,
+                verificacionUrl: null,
             },
             fechaEmision: document.fechaEmision || null,
             fechaVencimiento: document.fechaVencimiento || null,
@@ -1102,15 +1378,52 @@ const downloadDocument = async (req, res) => {
     return res.download(filePath, path.basename(document.archivo.nombreOriginal));
 };
 
+const downloadSignedDocument = async (req, res) => {
+    const validationId = objectId(req.params.validationId);
+    const validation = validationId ? await NotificacionValidacion.findById(validationId) : null;
+    if (!validation || !validation.documentoEmpresa) {
+        return res.status(404).json({ message: 'Documento firmado no encontrado' });
+    }
+
+    const permissions = new Set(req.authz?.permisos || []);
+    const isAdmin = permissions.has('documentos_empresa.ver');
+    const isOwner = String(validation.trabajador) === String(requestUserId(req));
+    if (!isAdmin && !isOwner) {
+        return res.status(403).json({ message: 'No tienes acceso a este documento firmado' });
+    }
+
+    let signedPath = resolveSignedDocumentPath(validation.documentoFirmado?.rutaRelativa);
+    if (!signedPath && validation.estado === 'aceptado') {
+        const worker = await Trabajador.findById(validation.trabajador);
+        await ensureCompanyDocumentSignedPdf({ validation, trabajador: worker });
+        signedPath = resolveSignedDocumentPath(validation.documentoFirmado?.rutaRelativa);
+    }
+    if (!signedPath) {
+        return res.status(404).json({ message: 'El PDF firmado todavía no está disponible' });
+    }
+
+    const fileName = path.basename(validation.documentoFirmado?.nombreOriginal || 'documento-firmado.pdf')
+        .replace(/["\r\n]/g, '_');
+    return res.sendFile(signedPath, {
+        headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `inline; filename="${fileName}"`,
+        },
+    });
+};
+
 module.exports = {
     addPhysicalSigner,
+    archiveTemplate,
     approveDocument,
     archiveCategory,
     archiveDocument,
     createCategory,
     createDocument,
+    createTemplate,
     diffuseDocument,
     downloadDocument,
+    downloadSignedDocument,
     getCandidates,
     getDocument,
     getDocumentEvidence,
@@ -1119,10 +1432,13 @@ module.exports = {
     listAvailableDocuments,
     listCategories,
     listDocuments,
+    listTemplates,
     removePhysicalSigner,
     renewDocument,
     serializeDocument,
+    sendTemplate,
     updateCategory,
     updateDocument,
+    updateTemplate,
     updatePhysicalSigner,
 };
