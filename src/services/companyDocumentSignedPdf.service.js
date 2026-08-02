@@ -1,15 +1,63 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const mammoth = require('mammoth');
 const QRCode = require('qrcode');
+const sanitizeHtml = require('sanitize-html');
 const { DocumentoEmpresa } = require('../models/documentoEmpresa.model.js');
 const { notificacion_validacion_MongooseModel: NotificacionValidacion } = require('../models/notificacion_validacion.model.js');
 const { renderAssignmentProgramPdf, escapeHtml } = require('../utils/asignacionProgramacionPdf.js');
 
 const SIGNED_DOCUMENTS_ROOT = path.resolve(__dirname, '../../storage/documentos-firmados');
 const TIMEZONE = 'America/Santiago';
+const TEMPLATE_HTML_ALLOWED_TAGS = [
+    'p', 'br', 'strong', 'b', 'em', 'i', 'u', 's',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'ul', 'ol', 'li',
+    'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
+    'blockquote', 'pre', 'code', 'span', 'div',
+];
+const TEMPLATE_HTML_ALLOWED_ATTRIBUTES = {
+    table: ['border', 'cellpadding', 'cellspacing'],
+    th: ['colspan', 'rowspan'],
+    td: ['colspan', 'rowspan'],
+};
 
 const normalizeName = (value) => String(value || '').trim().replace(/\s+/g, ' ');
+
+const sanitizeTemplateHtml = (html) => sanitizeHtml(String(html || ''), {
+    allowedTags: TEMPLATE_HTML_ALLOWED_TAGS,
+    allowedAttributes: TEMPLATE_HTML_ALLOWED_ATTRIBUTES,
+    allowedSchemes: [],
+    disallowedTagsMode: 'discard',
+    parser: {
+        lowerCaseTags: true,
+    },
+}).trim();
+
+const extractTemplateVariables = (...values) => Array.from(new Set(
+    values
+        .map((value) => String(value || ''))
+        .join('\n')
+        .match(/\{\{\s*[a-zA-Z0-9_.-]+\s*\}\}/g)
+        ?.map((match) => match.replace(/[{}]/g, '').trim())
+        .filter(Boolean) || []
+)).sort((left, right) => left.localeCompare(right, 'es'));
+
+const htmlToPlainText = (html) => sanitizeTemplateHtml(html)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|h[1-6]|li|tr)>/gi, '\n')
+    .replace(/<\/(td|th)>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 
 const safeFileSegment = (value, fallback = 'documento') => (
     normalizeName(value)
@@ -69,10 +117,11 @@ const resolveSignedDocumentPath = (relativePath) => {
 
 const getTemplateSnapshot = (document) => {
     const snapshot = document?.plantillaDocumental;
-    if (snapshot?.contenido) {
+    if (snapshot?.contenido || snapshot?.contenidoHtml) {
         return {
             nombre: snapshot.nombre || document.titulo,
             contenido: snapshot.contenido,
+            contenidoHtml: sanitizeTemplateHtml(snapshot.contenidoHtml),
             textoAceptacion: snapshot.textoAceptacion || '',
             version: snapshot.version || 1,
         };
@@ -127,6 +176,13 @@ const renderTemplateText = (templateText, context) => (
     ))
 );
 
+const renderTemplateHtml = (templateHtml, context) => {
+    const sanitized = sanitizeTemplateHtml(templateHtml);
+    return sanitized.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_match, key) => (
+        context[key] !== undefined ? escapeHtml(context[key]) : ''
+    ));
+};
+
 const renderParagraphs = (value) => {
     const paragraphs = String(value || '')
         .split(/\n{2,}/)
@@ -138,6 +194,136 @@ const renderParagraphs = (value) => {
     ).join('') || '<p>Sin contenido.</p>';
 };
 
+const renderTemplateBody = (template, context) => {
+    if (template?.contenidoHtml) {
+        return renderTemplateHtml(template.contenidoHtml, context) || '<p>Sin contenido.</p>';
+    }
+
+    return renderParagraphs(renderTemplateText(template?.contenido, context));
+};
+
+const buildTemplatePreviewHtml = ({ template, documentData = {}, signed = false } = {}) => {
+    const now = new Date();
+    const previewDocument = {
+        titulo: documentData.titulo || template?.nombre || 'Documento generado desde plantilla',
+        codigoVersionado: documentData.codigoVersionado || documentData.codigoBase || template?.codigoBase || 'DOC-VISTA-PREVIA',
+        codigoBase: documentData.codigoBase || template?.codigoBase || '',
+        version: documentData.version || 1,
+        categoria: { nombre: documentData.categoria || 'Documentos empresariales' },
+        fechaEmision: documentData.fechaEmision || now,
+        fechaVencimiento: documentData.fechaVencimiento || null,
+        responsableSistemaGestion: {
+            nombre: documentData.responsableNombre || 'Paola Olivares',
+            cargo: documentData.responsableCargo || 'Prevencion de Riesgos',
+        },
+    };
+    const context = buildTemplateContext({
+        document: previewDocument,
+        trabajador: {
+            Nombre: documentData.trabajadorNombre || 'Nombre del trabajador',
+            Rut: documentData.trabajadorRut || '11.111.111-1',
+            cargo: documentData.trabajadorCargo || 'Cargo del trabajador',
+        },
+        validation: {
+            firmadoAt: now,
+            aceptadoAt: signed ? now : null,
+        },
+        codigoValidacion: signed ? 'FES-2026-EJEMPLO1234' : 'Pendiente de firma',
+    });
+    const renderedContent = renderTemplateBody(template, context);
+
+    return `<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <title>${escapeHtml(previewDocument.titulo)}</title>
+    <style>
+        @page { size: A4 portrait; margin: 14mm; }
+        * { box-sizing: border-box; }
+        body { margin: 0; color: #172033; font-family: Arial, sans-serif; font-size: 12px; line-height: 1.45; }
+        header { border-bottom: 3px solid #0f766e; padding-bottom: 12px; margin-bottom: 18px; }
+        h1 { margin: 0 0 6px; font-size: 22px; color: #0f172a; }
+        h2 { margin: 16px 0 8px; font-size: 16px; color: #0f172a; }
+        h3 { margin: 14px 0 8px; font-size: 14px; color: #0f172a; }
+        p { margin: 0 0 8px; }
+        ul, ol { margin: 0 0 10px 18px; padding: 0; }
+        table { width: 100%; border-collapse: collapse; margin: 12px 0; table-layout: fixed; }
+        th, td { border: 1px solid #cbd5e1; padding: 6px; vertical-align: top; word-wrap: break-word; }
+        th { background: #e5eef8; color: #0f172a; }
+        .brand { font-weight: 800; color: #0f766e; text-transform: uppercase; }
+        .content { min-height: 520px; }
+        .signature-preview { margin-top: 18px; padding: 12px; border: 1px dashed #0f766e; color: #0f766e; }
+        footer { margin-top: 18px; padding-top: 8px; border-top: 1px solid #cbd5e1; color: #64748b; font-size: 9px; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="brand">Innovo Servicios</div>
+        <h1>${escapeHtml(previewDocument.titulo)}</h1>
+        <p>${escapeHtml(previewDocument.codigoVersionado || 'Documento generado desde plantilla')}</p>
+    </header>
+    <section class="content">${renderedContent}</section>
+    <section class="signature-preview">
+        <strong>Firma electronica simple:</strong> ${escapeHtml(context['firma.codigo'])}
+    </section>
+    <footer>Vista previa generada desde plantilla. La copia firmada individual incorporara trabajador, codigo de validacion y QR.</footer>
+</body>
+</html>`;
+};
+
+const importDocxTemplate = async (file) => {
+    if (!file?.buffer) {
+        const error = new Error('Debes seleccionar un archivo DOCX');
+        error.status = 400;
+        throw error;
+    }
+
+    const extension = path.extname(String(file.originalname || '')).toLowerCase();
+    if (
+        extension !== '.docx' ||
+        String(file.mimetype || '').toLowerCase() !== 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ) {
+        const error = new Error('Solo se permite importar plantillas DOCX');
+        error.status = 400;
+        throw error;
+    }
+
+    const result = await mammoth.convertToHtml(
+        { buffer: file.buffer },
+        {
+            styleMap: [
+                "p[style-name='Title'] => h1:fresh",
+                "p[style-name='Subtitle'] => h2:fresh",
+                "p[style-name='Heading 1'] => h1:fresh",
+                "p[style-name='Heading 2'] => h2:fresh",
+                "p[style-name='Heading 3'] => h3:fresh",
+            ],
+        }
+    );
+    const contenidoHtml = sanitizeTemplateHtml(result.value);
+    const contenido = htmlToPlainText(contenidoHtml);
+
+    if (contenido.length < 10) {
+        const error = new Error('No se pudo extraer contenido editable desde el DOCX');
+        error.status = 400;
+        throw error;
+    }
+
+    return {
+        nombre: path.basename(file.originalname, extension),
+        contenido,
+        contenidoHtml,
+        variablesDetectadas: extractTemplateVariables(contenidoHtml, contenido),
+        archivoBase: {
+            nombreOriginal: path.basename(String(file.originalname || 'plantilla.docx')),
+            mimeType: file.mimetype,
+            tamano: file.size || file.buffer.length,
+            importadoAt: new Date(),
+        },
+        advertencias: (result.messages || []).map((message) => String(message.message || message).trim()).filter(Boolean),
+    };
+};
+
 const buildSignedDocumentHtml = async ({ document, trabajador, validation, codigoValidacion }) => {
     const template = getTemplateSnapshot(document);
     const verificationUrl = buildVerificationUrl(codigoValidacion);
@@ -147,7 +333,7 @@ const buildSignedDocumentHtml = async ({ document, trabajador, validation, codig
         errorCorrectionLevel: 'M',
     });
     const context = buildTemplateContext({ document, trabajador, validation, codigoValidacion });
-    const renderedContent = renderTemplateText(template.contenido, context);
+    const renderedContent = renderTemplateBody(template, context);
     const renderedAcceptance = renderTemplateText(template.textoAceptacion, context);
 
     return `<!doctype html>
@@ -178,6 +364,10 @@ const buildSignedDocumentHtml = async ({ document, trabajador, validation, codig
         h1 { margin: 0 0 6px; font-size: 22px; color: #0f172a; }
         h2 { margin: 18px 0 8px; font-size: 14px; color: #0f172a; }
         p { margin: 0 0 8px; }
+        ul, ol { margin: 0 0 10px 18px; padding: 0; }
+        table { width: 100%; border-collapse: collapse; margin: 12px 0; table-layout: fixed; }
+        th, td { border: 1px solid #cbd5e1; padding: 6px; vertical-align: top; word-wrap: break-word; }
+        th { background: #e5eef8; color: #0f172a; }
         .brand { font-weight: 800; letter-spacing: 0; color: #0f766e; text-transform: uppercase; }
         .meta {
             display: grid;
@@ -249,7 +439,7 @@ const buildSignedDocumentHtml = async ({ document, trabajador, validation, codig
     </section>
 
     <section class="content">
-        ${renderParagraphs(renderedContent)}
+        ${renderedContent}
     </section>
 
     <section class="signature">
@@ -326,54 +516,7 @@ const ensureCompanyDocumentSignedPdf = async ({ validation, trabajador }) => {
 };
 
 const buildTemplateMasterPdf = async ({ template, documentData = {} }) => {
-    const now = new Date();
-    const context = {
-        'trabajador.nombre': 'Nombre del trabajador',
-        'trabajador.rut': 'RUT del trabajador',
-        'trabajador.cargo': 'Cargo del trabajador',
-        'nombre': 'Nombre del trabajador',
-        'rut': 'RUT del trabajador',
-        'cargo': 'Cargo del trabajador',
-        'documento.titulo': documentData.titulo || template.nombre,
-        'documento.codigo': documentData.codigoVersionado || documentData.codigoBase || template.codigoBase || '',
-        'documento.version': String(documentData.version || 1),
-        'documento.categoria': documentData.categoria || '',
-        'documento.fechaEmision': formatDate(documentData.fechaEmision || now),
-        'documento.fechaVencimiento': formatDate(documentData.fechaVencimiento),
-        'responsable.nombre': documentData.responsableNombre || 'Paola Olivares',
-        'responsable.cargo': documentData.responsableCargo || 'Prevencion de Riesgos',
-        'firma.codigo': 'Pendiente de firma',
-        'firma.fecha': 'Pendiente de firma',
-        'fecha': formatDateTime(now),
-        'empresa': 'Innovo Servicios',
-    };
-    const renderedContent = renderTemplateText(template.contenido, context);
-
-    const html = `<!doctype html>
-<html lang="es">
-<head>
-    <meta charset="utf-8">
-    <title>${escapeHtml(documentData.titulo || template.nombre)}</title>
-    <style>
-        @page { size: A4 portrait; margin: 14mm; }
-        body { margin: 0; color: #172033; font-family: Arial, sans-serif; font-size: 12px; line-height: 1.45; }
-        header { border-bottom: 3px solid #0f766e; padding-bottom: 12px; margin-bottom: 18px; }
-        h1 { margin: 0 0 6px; font-size: 22px; color: #0f172a; }
-        .brand { font-weight: 800; color: #0f766e; text-transform: uppercase; }
-        .content { min-height: 520px; }
-        footer { margin-top: 18px; padding-top: 8px; border-top: 1px solid #cbd5e1; color: #64748b; font-size: 9px; }
-    </style>
-</head>
-<body>
-    <header>
-        <div class="brand">Innovo Servicios</div>
-        <h1>${escapeHtml(documentData.titulo || template.nombre)}</h1>
-        <p>${escapeHtml(documentData.codigoVersionado || documentData.codigoBase || template.codigoBase || 'Documento generado desde plantilla')}</p>
-    </header>
-    <section class="content">${renderParagraphs(renderedContent)}</section>
-    <footer>Documento base generado desde plantilla. La copia firmada individual incorpora trabajador, codigo de validacion y QR.</footer>
-</body>
-</html>`;
+    const html = buildTemplatePreviewHtml({ template, documentData });
 
     return {
         buffer: await renderAssignmentProgramPdf(html),
@@ -421,8 +564,13 @@ module.exports = {
     SIGNED_DOCUMENTS_ROOT,
     buildPublicVerification,
     buildTemplateMasterPdf,
+    buildTemplatePreviewHtml,
     buildVerificationUrl,
     ensureCompanyDocumentSignedPdf,
+    extractTemplateVariables,
+    htmlToPlainText,
+    importDocxTemplate,
     resolveSignedDocumentPath,
+    sanitizeTemplateHtml,
     renderTemplateText,
 };

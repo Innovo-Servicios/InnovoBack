@@ -35,6 +35,11 @@ const {
 } = require('../services/companyDocumentEvidence.service.js');
 const {
     buildTemplateMasterPdf,
+    buildTemplatePreviewHtml,
+    extractTemplateVariables,
+    htmlToPlainText,
+    importDocxTemplate,
+    sanitizeTemplateHtml,
     ensureCompanyDocumentSignedPdf,
     resolveSignedDocumentPath,
 } = require('../services/companyDocumentSignedPdf.service.js');
@@ -181,6 +186,7 @@ const serializeTemplate = (template) => ({
     nombre: template.nombre,
     descripcion: template.descripcion || '',
     contenido: template.contenido || '',
+    contenidoHtml: template.contenidoHtml || '',
     textoAceptacion: template.textoAceptacion || '',
     codigoBase: template.codigoBase || '',
     categoriaId: template.categoria ? String(template.categoria._id || template.categoria) : null,
@@ -188,10 +194,34 @@ const serializeTemplate = (template) => ({
         ? serializeCategory(template.categoria)
         : null,
     version: template.version || 1,
+    archivoBase: template.archivoBase || null,
+    variablesDetectadas: template.variablesDetectadas || [],
     activo: template.activo !== false,
     createdAt: template.createdAt,
     updatedAt: template.updatedAt,
 });
+
+const normalizeTemplatePayload = (body = {}, previous = {}) => {
+    const htmlProvided = body.contenidoHtml !== undefined;
+    const contentProvided = body.contenido !== undefined;
+    const contenidoHtml = body.contenidoHtml === undefined
+        ? sanitizeTemplateHtml(previous.contenidoHtml || '')
+        : sanitizeTemplateHtml(body.contenidoHtml);
+    const contenido = !contentProvided
+        ? (htmlProvided ? htmlToPlainText(contenidoHtml) : (previous.contenido || htmlToPlainText(contenidoHtml)))
+        : String(body.contenido || '').trim();
+    const plainContent = contenido || htmlToPlainText(contenidoHtml);
+    const textoAceptacion = body.textoAceptacion === undefined
+        ? (previous.textoAceptacion || 'Declaro haber recibido, leido, comprendido y aceptado el contenido de este documento.')
+        : String(body.textoAceptacion || '').trim();
+
+    return {
+        contenido: plainContent,
+        contenidoHtml,
+        textoAceptacion,
+        variablesDetectadas: extractTemplateVariables(contenidoHtml, plainContent, textoAceptacion),
+    };
+};
 
 const serializeDocument = (document, validationMap = new Map()) => {
     const category = document.categoria;
@@ -257,10 +287,11 @@ const serializeDocument = (document, validationMap = new Map()) => {
             nombre: document.responsableSistemaGestion?.nombre || '',
             cargo: document.responsableSistemaGestion?.cargo || '',
         },
-        plantillaDocumental: document.plantillaDocumental?.contenido ? {
+        plantillaDocumental: document.plantillaDocumental?.contenido || document.plantillaDocumental?.contenidoHtml ? {
             plantillaId: document.plantillaDocumental.plantilla ? String(document.plantillaDocumental.plantilla) : null,
             nombre: document.plantillaDocumental.nombre || '',
             version: document.plantillaDocumental.version || 1,
+            variablesDetectadas: document.plantillaDocumental.variablesDetectadas || [],
         } : null,
         aprobaciones: (document.aprobaciones || []).map(normalizeApprovalRecordForClient),
         aprobacion: getApprovalSummary(document.aprobaciones || []),
@@ -487,7 +518,8 @@ const listTemplates = async (_req, res) => {
 
 const createTemplate = async (req, res) => {
     const nombre = normalizeName(req.body.nombre);
-    const contenido = String(req.body.contenido || '').trim();
+    const templatePayload = normalizeTemplatePayload(req.body);
+    const contenido = templatePayload.contenido;
     if (nombre.length < 2 || contenido.length < 10) {
         return res.status(400).json({ message: 'Nombre o contenido de plantilla inválido' });
     }
@@ -502,10 +534,13 @@ const createTemplate = async (req, res) => {
             nombre,
             descripcion: normalizeName(req.body.descripcion),
             contenido,
-            textoAceptacion: String(req.body.textoAceptacion || '').trim() ||
+            contenidoHtml: templatePayload.contenidoHtml,
+            textoAceptacion: templatePayload.textoAceptacion ||
                 'Declaro haber recibido, leido, comprendido y aceptado el contenido de este documento.',
             codigoBase: normalizeDocumentCode(req.body.codigoBase),
             categoria: category?._id,
+            archivoBase: req.body.archivoBase || undefined,
+            variablesDetectadas: templatePayload.variablesDetectadas,
             creadoPor: requestUserId(req),
             actualizadoPor: requestUserId(req),
         });
@@ -523,7 +558,8 @@ const updateTemplate = async (req, res) => {
         return res.status(404).json({ message: 'Plantilla no encontrada' });
     }
     const nombre = req.body.nombre === undefined ? template.nombre : normalizeName(req.body.nombre);
-    const contenido = req.body.contenido === undefined ? template.contenido : String(req.body.contenido || '').trim();
+    const templatePayload = normalizeTemplatePayload(req.body, template);
+    const contenido = templatePayload.contenido;
     if (nombre.length < 2 || contenido.length < 10) {
         return res.status(400).json({ message: 'Nombre o contenido de plantilla inválido' });
     }
@@ -538,11 +574,12 @@ const updateTemplate = async (req, res) => {
     template.nombre = nombre;
     template.descripcion = req.body.descripcion === undefined ? template.descripcion : normalizeName(req.body.descripcion);
     template.contenido = contenido;
-    template.textoAceptacion = req.body.textoAceptacion === undefined
-        ? template.textoAceptacion
-        : String(req.body.textoAceptacion || '').trim();
+    template.contenidoHtml = templatePayload.contenidoHtml;
+    template.textoAceptacion = templatePayload.textoAceptacion;
     template.codigoBase = req.body.codigoBase === undefined ? template.codigoBase : normalizeDocumentCode(req.body.codigoBase);
     template.categoria = category?._id || undefined;
+    template.archivoBase = req.body.archivoBase || template.archivoBase;
+    template.variablesDetectadas = templatePayload.variablesDetectadas;
     template.version = (template.version || 1) + 1;
     template.actualizadoPor = requestUserId(req);
     await template.save();
@@ -558,6 +595,54 @@ const archiveTemplate = async (req, res) => {
     template.actualizadoPor = requestUserId(req);
     await template.save();
     return res.status(204).send();
+};
+
+const importTemplateDocx = async (req, res) => {
+    try {
+        const imported = await importDocxTemplate(req.file);
+        return res.json(imported);
+    } catch (error) {
+        return res.status(error.status || 500).json({ message: error.message || 'No se pudo importar la plantilla' });
+    }
+};
+
+const previewTemplate = async (req, res) => {
+    try {
+        const payload = normalizeTemplatePayload(req.body);
+        const template = {
+            nombre: normalizeName(req.body.nombre) || 'Vista previa',
+            codigoBase: normalizeDocumentCode(req.body.codigoBase),
+            contenido: payload.contenido,
+            contenidoHtml: payload.contenidoHtml,
+            textoAceptacion: payload.textoAceptacion,
+        };
+        if (payload.contenido.length < 10) {
+            return res.status(400).json({ message: 'La plantilla necesita contenido para previsualizar' });
+        }
+        const documentData = {
+            titulo: normalizeName(req.body.titulo) || template.nombre,
+            codigoBase: template.codigoBase,
+            version: Number.parseInt(req.body.version, 10) || 1,
+            categoria: normalizeName(req.body.categoriaNombre) || 'Documentos empresariales',
+            fechaEmision: parseOptionalDate(req.body.fechaEmision) || new Date(),
+            fechaVencimiento: parseOptionalDate(req.body.fechaVencimiento),
+            responsableNombre: normalizeName(req.body.responsableNombre) || 'Paola Olivares',
+            responsableCargo: normalizeName(req.body.responsableCargo) || 'Prevencion de Riesgos',
+        };
+        const format = String(req.query.format || req.body.format || 'html').trim().toLowerCase();
+        if (format === 'pdf') {
+            const pdf = await buildTemplateMasterPdf({ template, documentData });
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', 'inline; filename="vista-previa-plantilla.pdf"');
+            return res.send(pdf.buffer);
+        }
+        return res.json({
+            html: buildTemplatePreviewHtml({ template, documentData }),
+            variablesDetectadas: payload.variablesDetectadas,
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({ message: error.message || 'No se pudo previsualizar la plantilla' });
+    }
 };
 
 const sendTemplate = async (req, res) => {
@@ -631,7 +716,9 @@ const sendTemplate = async (req, res) => {
                 nombre: template.nombre,
                 version: template.version,
                 contenido: template.contenido,
+                contenidoHtml: template.contenidoHtml,
                 textoAceptacion: template.textoAceptacion,
+                variablesDetectadas: template.variablesDetectadas || [],
             },
             aprobaciones: [],
             controlCambios: [
@@ -1428,11 +1515,13 @@ module.exports = {
     getDocument,
     getDocumentEvidence,
     getSummary,
+    importTemplateDocx,
     listChangeControl,
     listAvailableDocuments,
     listCategories,
     listDocuments,
     listTemplates,
+    previewTemplate,
     removePhysicalSigner,
     renewDocument,
     serializeDocument,

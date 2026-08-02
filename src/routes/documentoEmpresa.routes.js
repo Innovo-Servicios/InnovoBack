@@ -21,6 +21,8 @@ router.delete('/categorias/:id', requirePermission('documentos_empresa.categoria
 
 router.get('/plantillas', requirePermission('documentos_empresa.ver'), controller.listTemplates);
 router.post('/plantillas', requirePermission('documentos_empresa.gestionar'), controller.createTemplate);
+router.post('/plantillas/importar', requirePermission('documentos_empresa.gestionar'), uploadLimiter, companyDocumentUpload, controller.importTemplateDocx);
+router.post('/plantillas/preview', requirePermission('documentos_empresa.ver'), controller.previewTemplate);
 router.put('/plantillas/:templateId', requirePermission('documentos_empresa.gestionar'), controller.updateTemplate);
 router.delete('/plantillas/:templateId', requirePermission('documentos_empresa.gestionar'), controller.archiveTemplate);
 router.post('/plantillas/:templateId/enviar', requirePermission('documentos_empresa.firmas.gestionar'), controller.sendTemplate);
