@@ -1764,6 +1764,8 @@ const detallesNotificacion = async (req, res) => {
                     expiresAt: validacion?.expiresAt || null,
                     firmadoAt: validacion?.firmadoAt || null,
                     aceptadoAt: validacion?.aceptadoAt || null,
+                    createdAt: validacion?.createdAt || null,
+                    updatedAt: validacion?.updatedAt || null,
                     intentos: validacion?.intentos || 0,
                 };
 
