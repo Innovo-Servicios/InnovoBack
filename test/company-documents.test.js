@@ -182,6 +182,8 @@ test('worker document listing only queries active global company documents', () 
 });
 
 test('company document evidence summarizes delivery, view and signature records', () => {
+    const futureExpiration = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
     const evidence = buildCompanyDocumentEvidence({
         document: {
             _id: 'document-1',
@@ -203,14 +205,14 @@ test('company document evidence summarizes delivery, view and signature records'
                 estado: 'aceptado',
                 firmadoAt: '2026-07-30T20:00:00.000Z',
                 aceptadoAt: '2026-07-30T20:01:00.000Z',
-                expiresAt: '2026-08-06T20:00:00.000Z',
+                expiresAt: futureExpiration,
                 intentos: 1,
             },
             {
                 trabajador: 'worker-2',
                 notificacion: 'notification-1',
                 estado: 'pendiente',
-                expiresAt: '2026-08-06T20:00:00.000Z',
+                expiresAt: futureExpiration,
                 intentos: 0,
             },
         ],

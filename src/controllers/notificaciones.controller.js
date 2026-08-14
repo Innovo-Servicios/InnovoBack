@@ -101,6 +101,19 @@ const parseBoolean = (value) =>
     value === 1 ||
     value === 'on';
 
+const getAdministrativeSignatureMetadata = (notification) => {
+    const metadata = notification?.metadata && typeof notification.metadata === 'object'
+        ? notification.metadata
+        : {};
+
+    return {
+        modoRegistro: typeof metadata.modoRegistro === 'string' ? metadata.modoRegistro : null,
+        tipoFirmaAdministrativa: typeof metadata.tipoFirmaAdministrativa === 'string'
+            ? metadata.tipoFirmaAdministrativa
+            : null,
+    };
+};
+
 const getNotificationCodeSecret = () => {
     const secret = process.env.NOTIFICATION_CODE_SECRET || process.env.JWT_SECRET;
     if (!secret) {
@@ -1654,6 +1667,7 @@ const buscarNotificacion = async (req, res) => {
                         fecha: notificacion.fecha,
                         requiereFirma: Boolean(notificacion.requiereFirma),
                         firmaAutomatica: Boolean(notificacion.firmaAutomatica),
+                        ...getAdministrativeSignatureMetadata(notificacion),
                         programada: Boolean(notificacion.programada),
                         fechaProgramacion: notificacion.fechaProgramacion,
                         fechaEnvio: notificacion.fechaEnvio,
@@ -1718,6 +1732,7 @@ const detallesNotificacion = async (req, res) => {
         const validacionDetalle = {
             required: Boolean(notificacion.requiereFirma),
             firmaAutomatica: Boolean(notificacion.firmaAutomatica),
+            ...getAdministrativeSignatureMetadata(notificacion),
             resumen: {
                 pendientes: 0,
                 firmados: 0,
