@@ -16,6 +16,11 @@ const COMPANY_DOCUMENT_ALLOWED_MIME_TYPES = new Set([
 const COMPANY_DOCUMENT_ALLOWED_EXTENSIONS = new Set([
     '.pdf', '.jpeg', '.jpg', '.png', '.doc', '.docx', '.xls', '.xlsx',
 ]);
+const COMPANY_DOCUMENT_VISIBILITY_EDITABLE_STATES = new Set([
+    'vigente',
+    'pendiente_aprobacion',
+    'borrador',
+]);
 
 const normalizeName = (value) => String(value || '').trim().replace(/\s+/g, ' ');
 
@@ -226,15 +231,24 @@ const buildWorkerVisibleCompanyDocumentQuery = () => ({
     estado: 'vigente',
 });
 
+const canChangeCompanyDocumentVisibility = (document) =>
+    COMPANY_DOCUMENT_VISIBILITY_EDITABLE_STATES.has(document?.estado);
+
+const buildCompanyDocumentVisibilityChangeDescription = (previousGlobal, nextGlobal) =>
+    `Cambio de visibilidad: ${previousGlobal ? 'Global' : 'Interno'} -> ${nextGlobal ? 'Global' : 'Interno'}`;
+
 module.exports = {
     COMPANY_DOCUMENTS_ROOT,
     COMPANY_DOCUMENT_ALLOWED_EXTENSIONS,
     COMPANY_DOCUMENT_ALLOWED_MIME_TYPES,
+    COMPANY_DOCUMENT_VISIBILITY_EDITABLE_STATES,
+    buildCompanyDocumentVisibilityChangeDescription,
     buildDefaultApprovals,
     buildStoredFileName,
     buildVersionedDocumentCode,
     buildWorkerVisibleCompanyDocumentQuery,
     canAccessCompanyDocument,
+    canChangeCompanyDocumentVisibility,
     daysUntilExpiration,
     deleteSavedFile,
     ensureCategoryDirectory,

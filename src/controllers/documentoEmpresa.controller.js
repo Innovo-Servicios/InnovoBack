@@ -13,9 +13,11 @@ const { Rol } = require('../models/rol.model.js');
 const { createCompanyDocumentSignatureNotification } = require('./notificaciones.controller.js');
 const {
     buildDefaultApprovals,
+    buildCompanyDocumentVisibilityChangeDescription,
     buildVersionedDocumentCode,
     deleteSavedFile,
     canAccessCompanyDocument,
+    canChangeCompanyDocumentVisibility,
     buildWorkerVisibleCompanyDocumentQuery,
     ensureCategoryDirectory,
     getApprovalSummary,
@@ -62,6 +64,12 @@ const parseBoolean = (value) =>
     value === '1' ||
     value === 1 ||
     value === 'on';
+
+const parseRequiredBoolean = (value) => {
+    if ([true, 'true', '1', 1, 'on'].includes(value)) return true;
+    if ([false, 'false', '0', 0, 'off'].includes(value)) return false;
+    return null;
+};
 
 const parseList = (value) => {
     const parsed = parseJson(value, value);
@@ -1035,6 +1043,36 @@ const updateDocument = async (req, res) => {
     return res.json(serializeDocument(document, await validationMapForDocuments([document])));
 };
 
+const updateDocumentVisibility = async (req, res) => {
+    const id = objectId(req.params.id);
+    const document = id
+        ? await DocumentoEmpresa.findById(id)
+            .populate('categoria')
+            .populate('documentosRelacionados.documento')
+        : null;
+    if (!document) return res.status(404).json({ message: 'Documento no encontrado' });
+    if (!canChangeCompanyDocumentVisibility(document)) {
+        return res.status(409).json({ message: 'Solo documentos vigentes, pendientes de aprobación o borradores pueden cambiar visibilidad' });
+    }
+    const nextGlobal = parseRequiredBoolean(req.body.esGlobal);
+    if (nextGlobal === null) {
+        return res.status(400).json({ message: 'Debes indicar si el documento será Global o Interno' });
+    }
+    const previousGlobal = document.esGlobal === true;
+    if (previousGlobal !== nextGlobal) {
+        document.esGlobal = nextGlobal;
+        document.actualizadoPor = requestUserId(req);
+        document.controlCambios.push(buildControlChange({
+            version: document.version,
+            descripcion: buildCompanyDocumentVisibilityChangeDescription(previousGlobal, nextGlobal),
+            actor: req.authUser,
+        }));
+        await document.save();
+        req.io?.to('permission:documentos_empresa.ver').emit('documentosEmpresaActualizados', { id });
+    }
+    return res.json(serializeDocument(document, await validationMapForDocuments([document])));
+};
+
 const archiveDocument = async (req, res) => {
     const id = objectId(req.params.id);
     const document = id ? await DocumentoEmpresa.findById(id) : null;
@@ -1528,6 +1566,7 @@ module.exports = {
     sendTemplate,
     updateCategory,
     updateDocument,
+    updateDocumentVisibility,
     updateTemplate,
     updatePhysicalSigner,
 };

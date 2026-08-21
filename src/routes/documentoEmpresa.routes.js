@@ -37,6 +37,7 @@ router.get('/archivo/:id/:fileName', controller.downloadDocument);
 router.get('/', requirePermission('documentos_empresa.ver'), controller.listDocuments);
 router.post('/', requirePermission('documentos_empresa.gestionar'), uploadLimiter, companyDocumentUpload, controller.createDocument);
 router.get('/:id', requirePermission('documentos_empresa.ver'), controller.getDocument);
+router.patch('/:id/visibilidad', requirePermission('documentos_empresa.gestionar'), controller.updateDocumentVisibility);
 router.put('/:id', requirePermission('documentos_empresa.gestionar'), controller.updateDocument);
 router.delete('/:id', requirePermission('documentos_empresa.gestionar'), controller.archiveDocument);
 router.post('/:id/renovar', requirePermission('documentos_empresa.gestionar'), uploadLimiter, companyDocumentUpload, controller.renewDocument);

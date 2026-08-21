@@ -3,9 +3,11 @@ const assert = require('node:assert/strict');
 
 const {
     COMPANY_DOCUMENTS_ROOT,
+    buildCompanyDocumentVisibilityChangeDescription,
     buildDefaultApprovals,
     buildVersionedDocumentCode,
     canAccessCompanyDocument,
+    canChangeCompanyDocumentVisibility,
     buildWorkerVisibleCompanyDocumentQuery,
     getApprovalSummary,
     getDigitalSignatureSummary,
@@ -179,6 +181,26 @@ test('worker document listing only queries active global company documents', () 
         esGlobal: true,
         estado: 'vigente',
     });
+});
+
+test('company document visibility can only change while the document is editable', () => {
+    ['vigente', 'pendiente_aprobacion', 'borrador'].forEach((estado) => {
+        assert.equal(canChangeCompanyDocumentVisibility({ estado }), true);
+    });
+    ['archivado', 'reemplazado', 'vencido', undefined].forEach((estado) => {
+        assert.equal(canChangeCompanyDocumentVisibility({ estado }), false);
+    });
+});
+
+test('company document visibility changes are described without altering document versions', () => {
+    assert.equal(
+        buildCompanyDocumentVisibilityChangeDescription(false, true),
+        'Cambio de visibilidad: Interno -> Global'
+    );
+    assert.equal(
+        buildCompanyDocumentVisibilityChangeDescription(true, false),
+        'Cambio de visibilidad: Global -> Interno'
+    );
 });
 
 test('company document evidence summarizes delivery, view and signature records', () => {
